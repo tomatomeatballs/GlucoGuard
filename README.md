@@ -26,6 +26,25 @@ The current prototype demonstrates:
 
 This version does not yet include the full glucose prediction model, real database integration, or complete dashboard functions.
 
+## Effort Beyond Reused Liftoff Materials
+
+For Milestone 1, we reused part of our Liftoff poster and video materials because the project idea, motivation, and target users remain the same.
+
+To justify and quantify our additional Milestone 1 effort, we completed the following software engineering tasks after Liftoff:
+
+- Created a GitHub repository for GlucoGuard project tracking and submission.
+- Built a Streamlit-based login prototype as a technical proof of concept.
+- Implemented username and password login using simulated user accounts.
+- Added two user roles: Administrator and Standard User.
+- Implemented session management using `st.session_state`.
+- Added a role-based welcome page after successful login.
+- Added logout functionality to clear the user session.
+- Prepared `requirements.txt` for dependency management.
+- Wrote `README.md` with setup instructions, run instructions, current limitations, and future development plan.
+- Created `project_log.md` to document team contributions and progress.
+- Tested the prototype locally through `localhost`.
+
+This additional work demonstrates that the project has moved beyond the initial idea stage and now has a working authentication proof of concept for the future CGM Glucose Monitoring System.
 ---
 
 ## Features Implemented
