@@ -1,4 +1,18 @@
 # Project Log
+
+## 18 June 2026
+
+Integrated the SQLite database MVP into the main Streamlit application.
+
+Completed:
+- Connected the existing login system with the database dashboard.
+- Added glucose record input after login.
+- Stored glucose records in SQLite through `db.py`.
+- Displayed glucose history table from the database.
+- Added glucose trend visualization.
+- Added a simple latest glucose risk level indicator.
+
+
 ## 18 June 2026
 
 Implemented a basic SQLite database MVP for GlucoGuard.
