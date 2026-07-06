@@ -1,5 +1,34 @@
 # Project Log
 
+## 28 June 2026
+Fully integrated the core predictive pipeline and database logging into the interactive Streamlit application (app.py).
+Completed:
+- Connected user inputs with standard line charts for multi-source historical and predicted trend visualization.
+- Implemented a complete real-time Blood Glucose Prediction form interface.
+- Integrated asynchronous multi-source trend charting to overlay real-time historical trends alongside future AI prediction windows.
+
+## 27 June 2026
+Aligned the algorithmic backend with the Streamlit interactive UI (app.py).
+Completed:
+- Upgraded the Blood Glucose Prediction console to pipe user entries directly into local SQLite storage using db.py.
+
+Completed:
+- Re-engineered the Model Training panel to read real-time slider and selectbox parameters.
+- Implemented a complete real-time Blood Glucose Prediction form interface.
+
+
+## 25 June 2026
+Integrated the core algorithmic prediction pipeline into the main application backend (main.py).
+
+Completed:
+- Added vmdpy for signal decomposition into 5 IMF components.
+- Integrated Nutcracker Optimization Algorithm (NOA) for hyperparameter tuning.
+- Implemented component-wise BiLSTM prediction modeling.
+- Automated input sequence length (Look-back) deduction from data columns.
+- Added VMD signal decomposition plot generation and saving.
+- Connected performance evaluation using MAE, RMSE, and Clarke error grids.
+
+
 ## 18 June 2026
 
 Integrated the SQLite database MVP into the main Streamlit application.
@@ -25,6 +54,9 @@ Completed:
 - Created `app_database_demo.py` to test the Streamlit-to-database workflow.
 - The demo can now add glucose records, save them to SQLite, display historical records, and visualize glucose trends.
 - Tested manual glucose record input through the Streamlit interface.
+
+## 5 June 2026
+Upgraded the login card design with clear font configurations and personalized system titles.
 
 ## 31 May 2026
 

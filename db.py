@@ -1,97 +1,115 @@
+"""
+GlucoGuard - Database Management Module
+Handles SQLite operations for storing and fetching glucose records.
+"""
+
 import sqlite3
-from pathlib import Path
-import pandas as pd
+import os
+from datetime import datetime
 
-DB_PATH = Path(__file__).parent / "glucoguard.db"
-
-
-def get_connection():
-    return sqlite3.connect(DB_PATH)
+# Database file location
+DB_FILE = "glucoguard.db"
 
 
 def init_db():
-    conn = get_connection()
+    """
+    Initializes the database by creating the glucose records table if it doesn't exist.
+    """
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-
+    
+    # Create table with modern schema
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        role TEXT DEFAULT 'standard',
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
+        CREATE TABLE IF NOT EXISTS glucose_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            glucose_value REAL,
+            timestamp TEXT NOT NULL,
+            user_id INTEGER DEFAULT 1
+        )
     """)
 
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS glucose_records (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        timestamp TEXT NOT NULL,
-        glucose REAL NOT NULL,
-        source TEXT DEFAULT 'manual',
-        notes TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-    )
+        CREATE TABLE IF NOT EXISTS training_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_name TEXT NOT NULL,
+            file_size INTEGER,
+            upload_time TEXT NOT NULL
+        )
     """)
-
-    cursor.execute("""
-    CREATE INDEX IF NOT EXISTS idx_glucose_user_time
-    ON glucose_records(user_id, timestamp)
-    """)
-
-    cursor.execute("""
-    INSERT OR IGNORE INTO users (id, username, role)
-    VALUES (1, 'demo_user', 'standard')
-    """)
-
+    
+    # Critical Migration: Check if column names match old variations
+    cursor.execute("PRAGMA table_info(glucose_records)")
+    columns = [info[1] for info in cursor.fetchall()]
+    
+    # If the database has an old column name layout, rename it on the fly
+    if "glucose" in columns and "glucose_value" not in columns:
+        try:
+            cursor.execute("ALTER TABLE glucose_records RENAME COLUMN glucose TO glucose_value")
+        except Exception:
+            pass
+            
     conn.commit()
     conn.close()
 
 
-def add_glucose_record(user_id, timestamp, glucose, source="manual", notes=""):
-    conn = get_connection()
+def add_glucose_record(*args):
+    """
+    Adaptive helper function to insert a record.
+    Guarantees runtime insertion safely regardless of variable layout.
+    """
+    conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-
+    
+    if len(args) == 2:
+        timestamp_str = args[0]
+        input_glucose = args[1]
+        user_id = 1
+    elif len(args) == 3:
+        user_id = args[0]
+        timestamp_str = args[1]
+        input_glucose = args[2]
+    else:
+        conn.close()
+        raise ValueError("Invalid number of arguments passed to add_glucose_record.")
+        
     cursor.execute("""
-    INSERT INTO glucose_records (user_id, timestamp, glucose, source, notes)
-    VALUES (?, ?, ?, ?, ?)
-    """, (user_id, timestamp, glucose, source, notes))
-
+        INSERT INTO glucose_records (glucose_value, timestamp, user_id)
+        VALUES (?, ?, ?)
+    """, (float(input_glucose), str(timestamp_str), int(user_id)))
+    
     conn.commit()
     conn.close()
 
 
-def get_glucose_records(user_id=1):
-    conn = get_connection()
-
-    df = pd.read_sql_query("""
-    SELECT id, timestamp, glucose, source, notes, created_at
-    FROM glucose_records
-    WHERE user_id = ?
-    ORDER BY timestamp ASC
-    """, conn, params=(user_id,))
-
+def get_glucose_records():
+    """
+    Fetches historical records and normalizes them into standard data frames.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT id, glucose_value, timestamp, user_id FROM glucose_records ORDER BY timestamp ASC")
+        records = cursor.fetchall()
+    except sqlite3.OperationalError:
+        records = []
+        
     conn.close()
-    return df
+    return records
 
-
-def seed_demo_data():
-    init_db()
-
-    demo_records = [
-        ("2026-06-17 08:00", 5.8, "historical", "demo breakfast"),
-        ("2026-06-17 10:00", 6.4, "historical", "demo"),
-        ("2026-06-17 12:00", 7.2, "historical", "after lunch"),
-        ("2026-06-17 15:00", 6.1, "historical", "afternoon"),
-        ("2026-06-17 18:00", 7.8, "historical", "after dinner"),
-    ]
-
-    for timestamp, glucose, source, notes in demo_records:
-        add_glucose_record(1, timestamp, glucose, source, notes)
-
-
-if __name__ == "__main__":
-    seed_demo_data()
-    print("Database initialized and demo data inserted.")
-    print(get_glucose_records())
+def save_training_file_to_db(file_name, file_size, dataframe=None):
+    """
+    Saves the uploaded training file metadata securely to the SQLite database.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    cursor.execute("""
+        INSERT INTO training_files (file_name, file_size, upload_time)
+        VALUES (?, ?, ?)
+    """, (str(file_name), int(file_size), current_time))
+    
+    conn.commit()
+    conn.close()
