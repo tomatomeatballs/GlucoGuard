@@ -12,7 +12,15 @@ import time
 
 # Securely import the database module (Unified at the top)
 try:
-    from db import init_db, add_glucose_record, get_glucose_records, save_training_file_to_db
+    from db import (
+        init_db,
+        add_glucose_record,
+        get_glucose_records,
+        save_training_file_to_db,
+        register_user,
+        verify_user,
+        get_all_users,
+    )
 except ImportError:
     st.error("❌ `db.py` file not found in the same directory, or exported functions are incorrect.")
     st.stop()
@@ -23,25 +31,6 @@ try:
 except ImportError:
     st.error("❌ Missing required dependencies. Please run in your terminal: `pip install streamlit-option-menu`")
     st.stop()
-
-
-# ==================== USER DATABASE ====================
-USERS = {
-    "admin": {
-        "password": "123456",
-        "role": "Administrator",
-        "name": "Super Admin",
-        "email": "superAdmin@163.com",
-        "user_id": 1,
-    },
-    "user": {
-        "password": "123456",
-        "role": "Standard User",
-        "name": "Normal User",
-        "email": "user@example.com",
-        "user_id": 2,
-    },
-}
 
 
 # ==================== PAGE CONFIGURATION ====================
@@ -68,53 +57,92 @@ if "logged_in" not in st.session_state:
 if "username" not in st.session_state:
     st.session_state.username = ""
 
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
+
+if "display_name" not in st.session_state:
+    st.session_state.display_name = ""
+
+if "role" not in st.session_state:
+    st.session_state.role = "standard"
+
 
 # ==================== LOGIN PAGE ====================
 def login_page():
     """
-    Display the login interface with username and password fields.
-    Authenticates user credentials and manages session state.
+    Display the login/registration interface.
+    Authenticates credentials against the database (hashed passwords via db.verify_user)
+    and manages session state.
     """
     left_col, center_col, right_col = st.columns([1, 4, 1])
-    
+
     with center_col:
         st.markdown('<br><br><br>', unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown('<div style="background-color: #87CEFA; padding: 30px; border-radius: 10px; text-align: center; color: white;"><h1 style="font-size: 64px; font-weight: 600; margin: 0; line-height: 1.4; font-family: \'Chalkboard SE\';">Welcome to <br> GlucoGuard!</h1><p style="margin-top: 25px; opacity: 0.9; font-size: 22px; line-height: 1.6; font-family: \'Comic Sans MS\';">🤖 AI-assisted Prediction System<br>📈 Real-time Glucose Tracking & Prediction</p></div>', unsafe_allow_html=True)
-        
+
             st.markdown('<br>', unsafe_allow_html=True)
-        username = st.text_input(
-            'Username', 
-            placeholder='Enter your username (e.g., admin)',
-            key='login_username'
-        )
-        
-        password = st.text_input(
-            'Password', 
-            type='password', 
-            placeholder='Enter your password',
-            key='login_password'
-        )
-        
-        st.markdown('<br>', unsafe_allow_html=True)
-        
-        if st.button('🔐 Login', use_container_width=True):
-            if username in USERS and USERS[username]['password'] == password:
-                st.session_state.logged_in = True
-                st.session_state.username = username
-                st.success(f'✅ Welcome back, {USERS[username]["name"]}!')
-                st.balloons()  
-                st.rerun()
-            else:
-                st.error('❌ Invalid username or password. (Default: admin / 123456)')
-                with st.expander('ℹ️ Need help logging in?'):
-                    st.markdown("""
-                    **Default Test Accounts:**
-                    - Username: `admin` | Password: `123456` (Administrator access)
-                    - Username: `user` | Password: `123456` (Standard user access)
-                    
-                    **Note:** This is a demo system. Passwords are not encrypted.
-                    """)
+
+        login_tab, register_tab = st.tabs(["🔐 Login", "📝 Register"])
+
+        with login_tab:
+            username = st.text_input(
+                'Username',
+                placeholder='Enter your username (e.g., admin)',
+                key='login_username'
+            )
+
+            password = st.text_input(
+                'Password',
+                type='password',
+                placeholder='Enter your password',
+                key='login_password'
+            )
+
+            st.markdown('<br>', unsafe_allow_html=True)
+
+            if st.button('🔐 Login', use_container_width=True):
+                user = verify_user(username, password)
+                if user is not None:
+                    st.session_state.logged_in = True
+                    st.session_state.username = user["username"]
+                    st.session_state.user_id = user["user_id"]
+                    st.session_state.display_name = user["name"]
+                    st.session_state.role = user["role"]
+                    st.success(f'✅ Welcome back, {user["name"]}!')
+                    st.balloons()
+                    st.rerun()
+                else:
+                    st.error('❌ Invalid username or password.')
+                    with st.expander('ℹ️ Need help logging in?'):
+                        st.markdown("""
+                        **Default Test Accounts:**
+                        - Username: `admin` | Password: `123456` (Administrator access)
+                        - Username: `user` | Password: `123456` (Standard user access)
+
+                        Or create your own account under the **Register** tab.
+                        """)
+
+        with register_tab:
+            st.markdown("Create a new GlucoGuard account.")
+            new_name = st.text_input('Display Name', placeholder='e.g., Jane Tan', key='register_name')
+            new_username = st.text_input('Choose a Username', key='register_username')
+            new_password = st.text_input('Choose a Password', type='password', key='register_password')
+            confirm_password = st.text_input('Confirm Password', type='password', key='register_confirm')
+
+            if st.button('📝 Create Account', use_container_width=True):
+                if not new_username or not new_password:
+                    st.error('❌ Username and password are required.')
+                elif new_password != confirm_password:
+                    st.error('❌ Passwords do not match.')
+                elif len(new_password) < 6:
+                    st.error('❌ Password must be at least 6 characters long.')
+                else:
+                    success, message = register_user(new_username, new_password, new_name or new_username)
+                    if success:
+                        st.success(f'✅ {message} You can now log in from the Login tab.')
+                    else:
+                        st.error(f'❌ {message}')
 
 
 # ==================== DASHBOARD PAGE ====================
@@ -124,8 +152,8 @@ def dashboard_page():
     else:
         st.title('GlucoGuard')
         st.title('AI-assisted Prediction system')
-        st.markdown(f"### Welcome, **{USERS[st.session_state.username]['name']}**!")
-        st.markdown(f"**Role:** {USERS[st.session_state.username]['role']}")
+        st.markdown(f"### Welcome, **{st.session_state.display_name}**!")
+        st.markdown(f"**Role:** {st.session_state.role}")
         
         st.divider()
         st.info("""
@@ -144,6 +172,9 @@ def dashboard_page():
             if st.button('Logout', use_container_width=True):
                 st.session_state.logged_in = False
                 st.session_state.username = ''
+                st.session_state.user_id = None
+                st.session_state.display_name = ''
+                st.session_state.role = 'standard'
                 st.rerun()
 
 
@@ -257,7 +288,7 @@ def blood_sugar_prediction_page():
             
             if submit_data:
                 timestamp_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
-                current_user_id = USERS[st.session_state.username]["user_id"]
+                current_user_id = st.session_state.user_id
                 
                 db_success = False
                 try:
@@ -380,6 +411,9 @@ def main():
             if st.button("Log Out Safely", use_container_width=True):
                 st.session_state.logged_in = False
                 st.session_state.username = ""
+                st.session_state.user_id = None
+                st.session_state.display_name = ""
+                st.session_state.role = "standard"
                 st.rerun()
 
         if selected == "Dashboard":
