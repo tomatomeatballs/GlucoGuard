@@ -53,6 +53,22 @@ def init_db():
         )
     """)
 
+    # Per-user file storage: raw uploads, sliding-window datasets, and algorithm
+    # results all live here, distinguished by file_type. Content is stored directly
+    # in the database (BLOB) so nothing depends on local disk paths at deploy time.
+    # History is kept (no overwrite) — every save is a new row.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            file_type TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            file_content BLOB NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
     # Migration: add the authentication columns to an older users table that lacks them
     cursor.execute("PRAGMA table_info(users)")
     user_columns = [info[1] for info in cursor.fetchall()]
@@ -176,6 +192,82 @@ def get_all_users():
         rows = []
     conn.close()
     return rows
+
+
+# ==================== PER-USER FILE STORAGE ====================
+
+def save_user_file(user_id, file_type, file_name, file_content):
+    """
+    Save a file's raw bytes into the database for a given user.
+    file_type: one of 'raw_upload', '15min_data', '30min_data', '50min_data',
+               'prediction_15min'/'30min'/'50min', 'metrics_15min'/'30min'/'50min'.
+    Does NOT overwrite previous files of the same type — every call adds a new row,
+    so a user's upload/training history is preserved.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO user_files (user_id, file_type, file_name, file_content) VALUES (?, ?, ?, ?)",
+        (int(user_id), str(file_type), str(file_name), sqlite3.Binary(bytes(file_content))),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_files(user_id, file_type=None):
+    """
+    Return a user's own files (id, file_type, file_name, created_at) — newest first.
+    Does not return file_content (kept out to avoid loading large blobs for a list view);
+    use get_user_file_content() to fetch one file's actual bytes.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    if file_type:
+        cursor.execute(
+            "SELECT id, file_type, file_name, created_at FROM user_files "
+            "WHERE user_id = ? AND file_type = ? ORDER BY id DESC",
+            (user_id, file_type),
+        )
+    else:
+        cursor.execute(
+            "SELECT id, file_type, file_name, created_at FROM user_files "
+            "WHERE user_id = ? ORDER BY id DESC",
+            (user_id,),
+        )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_user_files():
+    """
+    Admin view: every file from every user, joined with the owning username.
+    Returns (id, username, file_type, file_name, created_at) — newest first.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT user_files.id, users.username, user_files.file_type,
+               user_files.file_name, user_files.created_at
+        FROM user_files
+        JOIN users ON users.id = user_files.user_id
+        ORDER BY user_files.id DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_user_file_content(file_id):
+    """Fetch one file's raw bytes + name by its row id (for download/preview)."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT file_name, file_content FROM user_files WHERE id = ?", (file_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None, None
+    return row[0], row[1]
 
 
 def add_glucose_record(*args):
