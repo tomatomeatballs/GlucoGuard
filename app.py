@@ -8,7 +8,24 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 import os
+import sys
 import time
+import glob
+import subprocess
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+
+# Real VMD-NOA-BiLSTM inference (lazy-loaded so a missing model dir doesn't crash import)
+try:
+    from predictor import GlucosePredictor
+except ImportError:
+    GlucosePredictor = None
+
+# Real AI consultation chat (requires src/llm_chat.py + a valid .env API key)
+try:
+    from src.llm_chat import ask_llm
+except ImportError:
+    ask_llm = None
 
 # Securely import the database module (Unified at the top)
 try:
@@ -185,6 +202,94 @@ def save_to_database(timestamp, glucose_value):
     pass
 
 
+# ==================== SLIDING-WINDOW TRAINING DATA GENERATOR ====================
+def generate_training_files(df_2col, data_dir='data'):
+    """
+    Convert a 2-column Excel (glucose_value + timestamp) into the three 11-column
+    training files required by VMD_NOA_BILSTM.py.
+
+    Each output file follows the sliding-window format:
+      cols 0-9 : 10 consecutive glucose readings (50-min look-back at 5-min intervals)
+      col 10   : the glucose value h steps ahead (prediction target)
+
+    look_back is fixed at 10; horizon (steps ahead) is 3/6/10 for 15/30/50 minutes —
+    this is what actually makes the three files predict different distances into the
+    future, not just the same next-5-minute value with a different column count.
+    """
+    df = df_2col.copy()
+    df = df.iloc[:, :2]
+    df.columns = ['glucose', 'timestamp']
+    df = df.sort_values('timestamp').reset_index(drop=True)
+
+    glucose = df['glucose'].values.astype(float)
+    n = len(glucose)
+
+    horizons = {'15min': 3, '30min': 6, '50min': 10}
+    look_back = 10
+    max_offset = max(horizons.values())
+    min_required = look_back + max_offset
+
+    if n < min_required:
+        raise ValueError(
+            f"Need at least {min_required} glucose readings (5-min intervals) to build "
+            f"training windows for all horizons. Only {n} rows provided."
+        )
+
+    os.makedirs(data_dir, exist_ok=True)
+    output_paths = {}
+
+    for horizon_name, h_steps in horizons.items():
+        rows = []
+        for i in range(look_back - 1, n - h_steps):
+            history = glucose[i - (look_back - 1): i + 1]
+            target = glucose[i + h_steps]
+            rows.append(list(history) + [target])
+
+        df_out = pd.DataFrame(rows)
+        file_path = os.path.join(data_dir, f'{horizon_name}_data.xlsx')
+        df_out.to_excel(file_path, index=False, header=False)
+        output_paths[horizon_name] = file_path
+
+    return output_paths
+
+
+def _describe_trend(glucose_series):
+    """Return a short text summary of the glucose trend (direction + range)."""
+    vals = np.array(glucose_series)
+    if len(vals) < 3:
+        return "Insufficient data for trend analysis."
+    recent = vals[-6:] if len(vals) >= 6 else vals[-3:]
+    slope = np.polyfit(np.arange(len(recent)), recent, 1)[0]
+    avg = np.mean(recent)
+    if avg > 10.0:
+        level = "hyperglycemic range"
+    elif avg < 3.9:
+        level = "hypoglycemic range"
+    else:
+        level = "normal range"
+    if slope > 0.05:
+        direction = "rising"
+    elif slope < -0.05:
+        direction = "falling"
+    else:
+        direction = "stable"
+    return f"Glucose is {direction} in the {level} (recent avg: {avg:.1f} mmol/L, trend slope: {slope:+.2f}/step)."
+
+
+@st.cache_resource
+def load_predictor():
+    """Cache the loaded VMD-NOA-BiLSTM predictor across Streamlit reruns."""
+    if GlucosePredictor is None:
+        return None
+    return GlucosePredictor(model_dir='models')
+
+
+def check_models_ready():
+    """Check whether all 3 trained horizon model files exist."""
+    model_files = [os.path.join('models', f'vmd_noa_bilstm_{h}.pkl') for h in ['15min', '30min', '50min']]
+    return all(os.path.exists(f) for f in model_files)
+
+
 # ==================== MANAGEMENT PAGE ====================
 def management_page():
     """
@@ -240,207 +345,548 @@ def management_page():
 def model_training_page():
     st.title("Model Training & Console")
     st.markdown("---")
-    col1, col2 = st.columns([1, 1])
 
     if 'uploaded_data_frames' not in st.session_state:
         st.session_state['uploaded_data_frames'] = {}
+    if 'training_files_generated' not in st.session_state:
+        st.session_state['training_files_generated'] = False
 
-    with col1:
-        st.subheader("1. Data Input")
-        st.markdown("*Please upload raw Excel files containing glucose records (e.g., 15/30/50-min intervals).*")
-        
-        uploaded_files = st.file_uploader(
-            "Drag and drop files here or click to upload", 
-            accept_multiple_files=True, 
-            type=['xlsx'], 
-            key="train_uploader"
+    # =======================================================
+    # 1. Data Input
+    # =======================================================
+    st.subheader("1. Data Input")
+    st.caption(
+        "Upload a 2-column Excel file: Column 1 = Glucose Value (mmol/L), "
+        "Column 2 = Timestamp. Data should be at regular 5-minute intervals."
+    )
+
+    uploaded_files = st.file_uploader(
+        "Drag and drop files here or click to upload",
+        accept_multiple_files=True,
+        type=['xlsx'],
+        key="train_uploader"
+    )
+    if uploaded_files:
+        st.success(f"Successfully received {len(uploaded_files)} file(s)")
+        for f in uploaded_files:
+            st.text(f" {f.name} ({f.size} bytes)")
+            if f.name not in st.session_state['uploaded_data_frames']:
+                with st.spinner(f"Uploading {f.name} to database..."):
+                    try:
+                        f.seek(0)
+                        df_raw = pd.read_excel(f)
+
+                        # Raw upload is 2 columns: glucose value + timestamp.
+                        if df_raw.shape[1] < 2:
+                            st.error(f"❌ {f.name}: at least 2 columns required (glucose + timestamp).")
+                        elif not pd.to_numeric(df_raw.iloc[:, 0], errors='coerce').notna().all():
+                            st.error(f"❌ {f.name}: column 1 (glucose) must be numeric with no missing values.")
+                        elif pd.to_datetime(df_raw.iloc[:, 1], errors='coerce').isna().any():
+                            st.error(f"❌ {f.name}: column 2 (timestamp) could not be parsed as dates/times.")
+                        else:
+                            save_training_file_to_db(f.name, f.size, df_raw)
+                            save_user_file(st.session_state.user_id, 'raw_upload', f.name, f.getvalue())
+                            st.session_state['uploaded_data_frames'][f.name] = df_raw
+                            st.toast(f"✅ Data file {f.name} successfully saved to DB!", icon="💾")
+
+                    except Exception as e:
+                        st.error(f"Failed to process file {f.name}: {str(e)}")
+
+    # =======================================================
+    # 2. Generate Training Files (2-col upload -> 3x 11-col sliding windows)
+    # =======================================================
+    if st.session_state['uploaded_data_frames']:
+        st.divider()
+        st.subheader("2. Generate Training Files")
+        st.caption(
+            "The uploaded raw glucose data is converted into three 11-column "
+            "sliding-window files (15/30/50-minute horizons) required by VMD-NOA-BiLSTM."
         )
-        if uploaded_files:
-            st.success(f"Successfully received {len(uploaded_files)} file(s)")
-            for f in uploaded_files:
-                st.text(f" {f.name} ({f.size} bytes)")
-                if f.name not in st.session_state['uploaded_data_frames']:
-                    with st.spinner(f"Uploading {f.name} to database..."):
-                        try:
-                            f.seek(0)
-                            df_raw = pd.read_excel(f)
 
-                            # ↓↓↓ 新加的校验逻辑 ↓↓↓
-                            if df_raw.shape[1] < 2:
-                                st.error(f"❌ {f.name} Invalid format — at least 2 columns required (features + target).")
-                            elif df_raw.isnull().any().any():
-                                st.error(f"❌ {f.name} Missing values (empty cells) detected. Please check and re-upload.") 
-                            elif not df_raw.apply(lambda col: pd.to_numeric(col, errors='coerce').notna().all()).all():
-                                st.error(f"❌ {f.name} Non-numeric data detected. Please check and re-upload.")
-                            else:
-                                save_training_file_to_db(f.name, f.size, df_raw)
-                                save_user_file(st.session_state.user_id, 'raw_upload', f.name, f.getvalue())
-                                st.session_state['uploaded_data_frames'][f.name] = df_raw
-                                st.toast(f"✅ Data file {f.name} successfully saved to DB!", icon="💾")
-                            # ↑↑↑ 新加的校验逻辑 ↑↑↑
+        file_name = list(st.session_state['uploaded_data_frames'].keys())[0]
+        df_uploaded = st.session_state['uploaded_data_frames'][file_name]
 
-                        except Exception as e:
-                            st.error(f"Failed to process file {f.name}: {str(e)}")
-    with col2:
-        st.subheader("2. Hyperparameter Configuration")
-        # 🛠️ Fix: Properly assign widgets to variables so they can be read down in the pipeline steps!
-        algorithm = st.selectbox("Select Predictive Algorithm Model", ["VMD-NOA-BiLSTM (Currently Optimal)", "LSTM-Standard Model", "SVM-Regression Model"])
-        epoch_num = st.slider("Training Epochs", 50, 500, 200)
-        split_ratio = st.slider("Train/Test Split Ratio", 0.5, 0.9, 0.6)
+        col_a, col_b = st.columns([2, 1])
+        with col_a:
+            st.info(f"Source: `{file_name}` — {len(df_uploaded)} rows × {df_uploaded.shape[1]} columns")
+        with col_b:
+            generate_btn = st.button("Generate Training Data", type="primary", use_container_width=True)
 
-    st.markdown("---")
-    st.subheader("3. Launch Model Training")
-    train_btn = st.button(" Launch VMD-NOA-BiLSTM Training Pipeline", type="primary", use_container_width=True)
-    
-    if train_btn:
-        if not uploaded_files:
-            st.error("❌ Please upload at least one raw Excel data file first on the left panel!")
+        if generate_btn:
+            try:
+                paths = generate_training_files(df_uploaded, data_dir='data')
+                st.session_state['training_files_generated'] = True
+
+                st.success("✅ Training files generated successfully!")
+                cols = st.columns(3)
+                for col_obj, (horizon, path) in zip(cols, paths.items()):
+                    df_check = pd.read_excel(path, header=None)
+                    with col_obj:
+                        st.metric(horizon, f"{df_check.shape[0]} windows", delta=f"{df_check.shape[1]} cols")
+                        st.caption(f"`{os.path.basename(path)}`")
+                    # Persist each generated training file into the database too
+                    with open(path, 'rb') as gen_f:
+                        save_user_file(st.session_state.user_id, f'{horizon}_data', os.path.basename(path), gen_f.read())
+            except Exception as e:
+                st.error(f"❌ Failed to generate training files: {str(e)}")
+
+        if st.session_state['training_files_generated']:
+            st.success("✅ Training data ready — proceed to Step 3 below.")
+
+    # =======================================================
+    # 3. Model Training Execution
+    # =======================================================
+    st.divider()
+    st.subheader('3. Model Training')
+
+    data_dir = os.path.join(os.getcwd(), 'data')
+    existing_files = glob.glob(os.path.join(data_dir, "*min*.xlsx"))
+    if existing_files:
+        st.info(f"{len(existing_files)} training file(s) in `data/`: {[os.path.basename(f) for f in existing_files]}")
+    else:
+        st.warning("⚠️ No training files in `data/` yet. Complete Step 2 first.")
+
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        start_btn = st.button('Start Training & Prediction', type='primary')
+
+    log_container = st.container()
+
+    if start_btn:
+        with log_container:
+            if not os.path.exists('VMD_NOA_BILSTM.py'):
+                st.error("❌ VMD_NOA_BILSTM.py not found in the working directory.")
+                st.stop()
+
+            if not glob.glob(os.path.join(data_dir, "*min*.xlsx")):
+                st.error("❌ No training files in `data/`. Generate them in Step 2 first.")
+                st.stop()
+
+            st.info('Initializing algorithm engine...')
+            my_bar = st.progress(0, text='Preparing runtime environment...')
+
+            try:
+                status_box = st.empty()
+                cmd = [sys.executable, '-u', 'VMD_NOA_BILSTM.py']
+
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    bufsize=1,
+                    cwd=os.path.dirname(os.path.abspath(__file__))
+                )
+
+                st.markdown("##### Real-time Terminal Output")
+                st.caption(
+                    "VMD-NOA-BiLSTM is training. Initial launch ~30-60s; "
+                    "full optimization ~3-7 min depending on hardware."
+                )
+                log_placeholder = st.empty()
+                full_logs = []
+
+                while True:
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
+                        break
+                    if line:
+                        full_logs.append(line)
+                        log_placeholder.code("".join(full_logs[-15:]), language="bash")
+
+                        if "VMD" in line:
+                            status_box.info("Executing: Variational Mode Decomposition (VMD)...")
+                            my_bar.progress(20, text="Step 1: Signal Decomposition")
+                        elif "NOA" in line or "Optimization" in line:
+                            status_box.info("Executing: Nutcracker Optimization Algorithm (NOA)...")
+                            my_bar.progress(40, text="Step 2: Global Parameter Optimization")
+                        elif "LSTM" in line or "Epoch" in line:
+                            status_box.info("Executing: BiLSTM Neural Network Training...")
+                            my_bar.progress(70, text="Step 3: Neural Network Training")
+                        elif "Prediction" in line or "Excel" in line or "Model saved" in line:
+                            status_box.info("Executing: Exporting results & model files...")
+                            my_bar.progress(90, text="Step 4: Result Generation")
+
+                process.wait()
+                my_bar.progress(100, text='Computation Completed!')
+                status_box.empty()
+
+                if process.returncode == 0:
+                    st.success('✅ Model training pipeline completed successfully!')
+                    st.session_state['training_files_generated'] = False
+
+                    # Persist the 6 generated result files into the database
+                    for horizon in ['15min', '30min', '50min']:
+                        pred_path = os.path.join("results", f"Final_Prediction_{horizon}.xlsx")
+                        metrics_path = os.path.join("results", f"metrics_{horizon}.csv")
+                        if os.path.exists(pred_path):
+                            with open(pred_path, 'rb') as rf:
+                                save_user_file(st.session_state.user_id, f'prediction_{horizon}', os.path.basename(pred_path), rf.read())
+                        if os.path.exists(metrics_path):
+                            with open(metrics_path, 'rb') as rf:
+                                save_user_file(st.session_state.user_id, f'metrics_{horizon}', os.path.basename(metrics_path), rf.read())
+
+                    with st.expander('View Full Execution Logs'):
+                        st.code("".join(full_logs))
+                else:
+                    st.error('❌ Pipeline exited with an error.')
+                    st.error("".join(full_logs))
+
+            except Exception as e:
+                st.error(f'Failed to launch training process: {e}')
+
+    # =======================================================
+    # 4. Integrated Performance Analytics (Plots & Metrics)
+    # =======================================================
+    st.divider()
+    st.subheader('Integrated Performance Analytics')
+    st.caption(
+        "Aligns empirical glucose tracking trajectories alongside their error profiles "
+        "(RMSE, MAE, MAPE), calculated on the held-out test set for each horizon."
+    )
+
+    horizons_config = [
+        {'key': '15min', 'label': '15-Minute Forecasting Horizon'},
+        {'key': '30min', 'label': '30-Minute Forecasting Horizon'},
+        {'key': '50min', 'label': '50-Minute Forecasting Horizon'}
+    ]
+
+    for config in horizons_config:
+        h_key = config['key']
+        h_label = config['label']
+
+        st.markdown(f"### {h_label}")
+
+        prediction_file_path = os.path.join("results", f"Final_Prediction_{h_key}.xlsx")
+        metrics_file_path = os.path.join("results", f"metrics_{h_key}.csv")
+
+        if os.path.exists(prediction_file_path):
+            try:
+                with open(prediction_file_path, "rb") as f:
+                    pred_df = pd.read_excel(f)
+
+                if pred_df.shape[0] < 2:
+                    st.warning(f"File `{os.path.basename(prediction_file_path)}` has too few rows to plot.")
+                    continue
+
+                y_true_plot = pred_df.iloc[:, -2].values
+                y_pred_plot = pred_df.iloc[:, -1].values
+
+                fig, ax = plt.subplots(figsize=(10, 3.8))
+                display_len = min(150, len(y_true_plot))
+
+                ax.plot(y_true_plot[:display_len], label='Ground Truth (Reference)', color='#1f77b4', linewidth=2, marker='o', markersize=3)
+                ax.plot(y_pred_plot[:display_len], label='Model Forecast (Predicted)', color='#d62728', linewidth=1.8, linestyle='--', marker='x', markersize=4.5)
+
+                ax.set_title(f"{h_label} - Prediction Tracking Profile", fontsize=10, fontweight='bold')
+                ax.set_xlabel("Time Series Sequence Points (Samples)", fontsize=8)
+                ax.set_ylabel("Glucose Concentration", fontsize=8)
+                ax.grid(True, linestyle=':', alpha=0.5)
+                ax.legend(loc='upper right', fontsize=8)
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+
+                st.pyplot(fig)
+                plt.close(fig)
+
+            except Exception as e:
+                st.error(f"Failed to render trajectory curves for {h_label}: {e}")
+
+            if os.path.exists(metrics_file_path):
+                try:
+                    metrics_df = pd.read_csv(metrics_file_path)
+                    metrics_dict = dict(zip(metrics_df['Metric'], metrics_df['Value']))
+                    rmse_val = metrics_dict.get('RMSE', 0.0)
+                    mae_val = metrics_dict.get('MAE', 0.0)
+                    mape_val = metrics_dict.get('MAPE', 0.0)
+
+                    m_col1, m_col2, m_col3 = st.columns(3)
+                    with m_col1:
+                        st.metric(label="RMSE (Root Mean Squared Error)", value=f"{rmse_val:.4f}")
+                    with m_col2:
+                        st.metric(label="MAE (Mean Absolute Error)", value=f"{mae_val:.4f}")
+                    with m_col3:
+                        st.metric(label="MAPE (Mean Absolute Percentage Error)", value=f"{mape_val:.2f}%")
+
+                except Exception as metrics_err:
+                    st.error(f"Failed to read metrics for {h_label}: {metrics_err}")
+            else:
+                st.info(f"Metrics file `metrics_{h_key}.csv` not found yet.")
+
+            st.caption(f"Full results file: `results/Final_Prediction_{h_key}.xlsx`")
+            st.markdown("---")
+
         else:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            # The highly customized professional 7-step pipeline matching your math backend engine
-            steps = [
-                "Loading training data from database...",
-                "Executing VMD signal decomposition (K=5)...",
-                f"Initializing NOA swarm optimization algorithm (Target Epochs: {epoch_num})...",
-                f"Splitting datasets with configured ratio ({split_ratio}:{round(1-split_ratio, 2)}) into BiLSTM...",
-                f"BiLSTM neural network parallel training in progress... Optimizing weights for [{algorithm}]...",
-                "Executing Clarke Error Grid Analysis and clinical-grade metric calculations...",
-                "Generating final standardized Excel training reports..."
-            ]
-            
-            for i, step in enumerate(steps):
-                status_text.text(f"Current Status: {step}")
-                time.sleep(1.0) 
-                progress_bar.progress(int((i + 1) / len(steps) * 100))
-                
-            status_text.success("✅ Training completed successfully! All execution logs and results have been archived.")
-            st.balloons()
+            st.info("Horizon profile pending — run training above to generate it.")
+            st.caption(f"Will appear once `results/Final_Prediction_{h_key}.xlsx` is generated.")
 
 
 # ==================== BLOOD GLUCOSE PREDICTION PAGE ====================
 def blood_sugar_prediction_page():
-    st.title(" Real-time Blood Glucose Prediction Center")
+    st.title("Real-time Blood Glucose Prediction Center")
     st.markdown("---")
 
-    model_dir = 'models'
-    model_path = os.path.join(model_dir, 'latest_vmd_noa_bilstm.pkl')
-    col1, col2 = st.columns([1, 1.2])
+    # =======================================================
+    # Section 1: Log a single reading (real DB write, unchanged)
+    # =======================================================
+    st.subheader("Log a Glucose Reading")
+    with st.form("glucose_entry_form", clear_on_submit=False):
+        st.markdown("**Enter Current Reading**")
+        current_time = pd.Timestamp.now()
+        st.info(f"Current Timestamp: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-    with col1:
-        st.subheader(" Real-time Data Entry")
-        with st.form("glucose_entry_form", clear_on_submit=False):
-            st.markdown("**Enter Current Vital Signs Metrics**")
-            current_time = pd.Timestamp.now()
-            st.info(f" Current Timestamp: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            input_glucose = st.number_input(
-                "Current Blood Glucose Value (mmol/L)", 
-                min_value=1.0, max_value=30.0, value=7.0, step=0.1
-            )
-            submit_data = st.form_submit_button("💾 Save Current Data & Trigger Prediction", use_container_width=True)
-            
-            if submit_data:
-                timestamp_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
-                current_user_id = st.session_state.user_id
-                
-                db_success = False
-                try:
-                    add_glucose_record(current_user_id, timestamp_str, input_glucose)
-                    db_success = True
-                except Exception as e:
-                    st.error(f"An unexpected database error occurred: {str(e)}")
+        input_glucose = st.number_input(
+            "Current Blood Glucose Value (mmol/L)",
+            min_value=1.0, max_value=30.0, value=7.0, step=0.1
+        )
+        submit_data = st.form_submit_button("💾 Save Reading to Database", use_container_width=True)
 
-                if db_success:
-                    st.session_state['latest_entry'] = {
-                        'time': current_time,
-                        'glucose': input_glucose
-                    }
-                    st.success("✅ Glucose record successfully persisted to SQLite database!")
+        if submit_data:
+            timestamp_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
+            try:
+                add_glucose_record(st.session_state.user_id, timestamp_str, input_glucose)
+                st.success("✅ Glucose record successfully persisted to SQLite database!")
+            except Exception as e:
+                st.error(f"An unexpected database error occurred: {str(e)}")
 
-        st.subheader("⚙️ Prediction Configuration")
-        st.selectbox("Select Future Prediction Window", ["Next 15 Mins", "Next 30 Mins", "Next 45 Mins", "Next 60 Mins"])
-        st.number_input("Hyperglycemia Alert Threshold Line", value=10.0, step=0.5)
-        st.number_input("Hypoglycemia Alert Threshold Line", value=3.9, step=0.1)
+    st.number_input("Hyperglycemia Alert Threshold Line", value=10.0, step=0.5, key="hyper_threshold")
+    st.number_input("Hypoglycemia Alert Threshold Line", value=3.9, step=0.1, key="hypo_threshold")
 
-    with col2:
-        st.subheader(" Prediction Core Console")
-        if os.path.exists(model_path):
-            st.success(" VMD-NOA-BiLSTM Core Engine Status: **Ready**")
-        else:
-            st.warning("⚠️ No physical model file detected. The system is running in [Demo Prediction Mode].")
+    st.divider()
 
-        predict_btn = st.button(" Execute Forward Intelligent Prediction", type="primary", use_container_width=True)
-        if predict_btn:
-            if 'latest_entry' not in st.session_state:
-                st.error("❌ Please enter and submit a current blood glucose value in the left panel first!")
+    # =======================================================
+    # Section 2: Real AI prediction from an uploaded history
+    # =======================================================
+    st.subheader("AI Prediction from Uploaded Data")
+
+    all_models_ready = check_models_ready()
+    if all_models_ready:
+        st.success("🧬 VMD-NOA-BiLSTM Core Engine Status: **Ready** — 3 horizon models loaded (15min / 30min / 50min)")
+    else:
+        st.warning("⚠️ Trained model files not found in `models/`. Run Model Training first.")
+
+    st.caption("Upload a 2-column Excel file: Column 1 = Glucose Value (mmol/L), Column 2 = Timestamp.")
+    uploaded_file = st.file_uploader("Choose Excel file", type=["xlsx"], key="glucose_excel_upload")
+
+    if uploaded_file is not None:
+        try:
+            df_raw = pd.read_excel(uploaded_file)
+
+            if df_raw.shape[1] < 2:
+                st.error("❌ The Excel file must have at least 2 columns: glucose_value + timestamp.")
+            elif GlucosePredictor is None:
+                st.error("❌ predictor.py could not be imported — prediction unavailable.")
             else:
-                current_record = st.session_state['latest_entry']
-                glucose_val = current_record['glucose']
-                time_val = current_record['time']
+                st.info(f"Loaded {len(df_raw)} rows.")
+                with st.expander("Data Preview", expanded=False):
+                    st.dataframe(df_raw.head(15), use_container_width=True, hide_index=True)
 
-                with st.spinner('AI engine is calculating future blood glucose evolution trends...'):
-                    time.sleep(1.2)
-                    pred_intervals = [15, 30, 45, 60]
-                    pred_values = [glucose_val + 0.3, glucose_val + 0.7, glucose_val + 0.4, glucose_val - 0.2]
-                    
-                    df_predict = pd.DataFrame({
-                        'Timestamp': [time_val + pd.Timedelta(minutes=m) for m in pred_intervals],
-                        'Predicted Glucose(mmol/L)': pred_values
-                    })
+                X_aux, target_series, raw_series, timestamps = GlucosePredictor.excel_to_11col(df_raw)
+                st.caption(f"Sliding window constructed: {len(target_series)} windows from {len(raw_series)} readings")
 
-                    st.markdown("### Future Predicted Metrics List")
-                    df_table_show = df_predict.copy()
-                    df_table_show['Timestamp'] = df_table_show['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-                    st.dataframe(df_table_show, use_container_width=True, hide_index=True)
+                if st.button("🚀 Execute VMD-NOA-BiLSTM Prediction", type="primary", use_container_width=True):
+                    if all_models_ready:
+                        with st.spinner('VMD decomposition + BiLSTM inference across 3 horizons...'):
+                            predictor = load_predictor()
+                            results = predictor.predict_all_horizons(X_aux, target_series)
+                        mode_label = "VMD-NOA-BiLSTM"
+                    else:
+                        st.error("❌ Cannot predict — trained models are missing. Run Model Training first.")
+                        st.stop()
 
-                    st.markdown("### 📈 Multi-Source Trend View")
-                    
+                    st.markdown(f"### Future Glucose Predictions — *{mode_label}*")
+                    col_a, col_b, col_c = st.columns(3)
+                    col_a.metric("15 Minutes", f"{results['15min']:.2f} mmol/L")
+                    col_b.metric("30 Minutes", f"{results['30min']:.2f} mmol/L")
+                    col_c.metric("50 Minutes", f"{results['50min']:.2f} mmol/L")
+
                     try:
-                        db_records = get_glucose_records()
+                        parsed_timestamps = pd.to_datetime(timestamps)
                     except Exception:
-                        db_records = None
-                    
-                    is_db_valid = False
-                    if db_records is not None and len(db_records) > 0:
-                        is_db_valid = True
+                        parsed_timestamps = pd.date_range(end=pd.Timestamp.now(), periods=len(raw_series), freq='5min')
+                    last_ts = parsed_timestamps[-1]
 
-                    if is_db_valid:
-                        try:
-                            db_times = [datetime.strptime(str(row[2]), '%Y-%m-%d %H:%M:%S') for row in db_records[-10:]]
-                            db_vals = [float(row[1]) for row in db_records[-10:]]
-                            df_history = pd.DataFrame({
-                                'Timeline': db_times, 
-                                'Glucose Level': db_vals, 
-                                'Data Status': 'Historical Data'
-                            })
-                        except Exception:
-                            is_db_valid = False
-                    
-                    if not is_db_valid:
-                        df_history = pd.DataFrame({
-                            'Timeline': [time_val - pd.Timedelta(minutes=30), time_val - pd.Timedelta(minutes=15)],
-                            'Glucose Level': [float(glucose_val - 0.5), float(glucose_val - 0.2)],
-                            'Data Status': 'Historical Data'
-                        })
+                    pred_times = [last_ts, last_ts + pd.Timedelta(minutes=15), last_ts + pd.Timedelta(minutes=30), last_ts + pd.Timedelta(minutes=50)]
+                    pred_vals = [float(raw_series[-1]), float(results['15min']), float(results['30min']), float(results['50min'])]
 
-                    df_current = pd.DataFrame({'Timeline': [time_val], 'Glucose Level': [float(glucose_val)], 'Data Status': ['Current Input']})
-                    
-                    df_future = df_predict.rename(columns={'Timestamp': 'Timeline', 'Predicted Glucose(mmol/L)': 'Glucose Level'})
-                    df_future['Data Status'] = 'AI Prediction'
-                    df_future['Glucose Level'] = df_future['Glucose Level'].astype(float)
-                    
-                    df_future_link = pd.DataFrame({'Timeline': [time_val], 'Glucose Level': [float(glucose_val)], 'Data Status': ['AI Prediction']})
-                    
-                    df_chart = pd.concat([df_history, df_current, df_future_link, df_future], ignore_index=True)
-                    st.line_chart(df_chart, x='Timeline', y='Glucose Level', color='Data Status', use_container_width=True)
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=parsed_timestamps, y=raw_series.astype(float),
+                        mode='lines+markers', name='Historical Data',
+                        line=dict(color='#90B4CE', width=1.5), marker=dict(size=4, color='#90B4CE'),
+                        opacity=0.55,
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=pred_times, y=pred_vals,
+                        mode='lines+markers', name='AI Prediction',
+                        line=dict(color='#E63946', width=2.5),
+                        marker=dict(size=10, color='#E63946', line=dict(width=2, color='white')),
+                    ))
+                    fig.update_layout(
+                        xaxis_title='Time', yaxis_title='Glucose (mmol/L)',
+                        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+                        hovermode='x unified', margin=dict(l=20, r=20, t=40, b=20), plot_bgcolor='white',
+                    )
+                    st.markdown("### Glucose Trend & AI Prediction")
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    # Save for the AI Consultation page to use as context
+                    st.session_state['prediction_context'] = {
+                        'raw_series': raw_series.astype(float).tolist(),
+                        'timestamps': [str(t) for t in parsed_timestamps],
+                        'predictions': results,
+                        'last_glucose': float(raw_series[-1]),
+                        'last_time': str(last_ts),
+                        'mode': mode_label,
+                        'glucose_trend': _describe_trend(raw_series.astype(float)),
+                    }
+                    st.success("✅ Prediction synced to AI Consultation — switch tabs for personalized insights.")
+
+        except Exception as e:
+            st.error(f"❌ Error processing file: {str(e)}")
 
 
 # ==================== AI CONSULTATION PAGE ====================
 def ai_consultation_page():
     st.title("💬 AI Medical Consultation Hub")
-    st.info("Welcome to the AI smart consultation assistant page. (Feature development in progress...)")
+    st.markdown("---")
+
+    if ask_llm is None:
+        st.error("❌ AI chat is unavailable — src/llm_chat.py could not be imported, or the API key is missing from .env.")
+        return
+
+    has_prediction = 'prediction_context' in st.session_state
+
+    # ---- Prediction dashboard, if available ----
+    if has_prediction:
+        ctx = st.session_state['prediction_context']
+        st.subheader("Your Glucose Prediction Dashboard")
+        col1, col2, col3, col4 = st.columns(4)
+        delta_15 = ctx['predictions']['15min'] - ctx['last_glucose']
+        delta_30 = ctx['predictions']['30min'] - ctx['last_glucose']
+        delta_50 = ctx['predictions']['50min'] - ctx['last_glucose']
+        col1.metric("Current", f"{ctx['last_glucose']:.1f} mmol/L")
+        col2.metric("+15 min", f"{ctx['predictions']['15min']:.1f} mmol/L", f"{delta_15:+.1f}")
+        col3.metric("+30 min", f"{ctx['predictions']['30min']:.1f} mmol/L", f"{delta_30:+.1f}")
+        col4.metric("+50 min", f"{ctx['predictions']['50min']:.1f} mmol/L", f"{delta_50:+.1f}")
+        st.info(f"Trend: {ctx['glucose_trend']}  |  Prediction engine: *{ctx['mode']}*")
+    else:
+        st.warning(
+            "⚠️ No prediction data loaded. Go to **Glucose Prediction** → upload an Excel "
+            "file → run prediction → then return here for AI analysis."
+        )
+
+    st.markdown("---")
+
+    # ---- Patient context inputs ----
+    st.subheader("Tell Me About Your Current Situation")
+    st.caption("This helps the AI micro-adjust the predictions and give personalized recommendations.")
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.markdown("**Insulin**")
+        insulin_taken = st.radio("Injected recently?", ["No", "Yes"], key="insulin_radio", horizontal=True)
+        if insulin_taken == "Yes":
+            insulin_dose = st.number_input("Dosage (units)", 0.0, 100.0, 0.0, 0.5, key="insulin_dose")
+            insulin_time = st.text_input("Time since injection", placeholder="e.g. 30 minutes ago", key="insulin_time")
+            insulin_details = f"Injected {insulin_dose} units, {insulin_time}."
+        else:
+            insulin_details = "No recent insulin injection."
+
+    with col_b:
+        st.markdown("**Food Intake**")
+        meal_eaten = st.radio("Eaten recently?", ["No", "Yes"], key="meal_radio", horizontal=True)
+        if meal_eaten == "Yes":
+            meal_desc = st.text_input("What did you eat?", placeholder="e.g. rice, bread, fruit", key="meal_desc")
+            meal_time = st.text_input("How long ago?", placeholder="e.g. 20 minutes ago", key="meal_time")
+            meal_carbs = st.selectbox("Estimated carbs", ["Low (<30g)", "Medium (30-60g)", "High (>60g)"], key="meal_carbs")
+            meal_details = f"Ate: {meal_desc} ({meal_carbs}), {meal_time}."
+        else:
+            meal_details = "No recent food intake."
+
+    with col_c:
+        st.markdown("**Exercise**")
+        exercise_done = st.radio("Exercised recently?", ["No", "Yes"], key="exercise_radio", horizontal=True)
+        if exercise_done == "Yes":
+            exercise_type = st.selectbox("Type", ["Walking", "Running", "Cycling", "Gym / Weights", "Swimming", "Other"], key="exercise_type")
+            exercise_dur = st.number_input("Duration (minutes)", 5, 180, 30, 5, key="exercise_dur")
+            exercise_time = st.text_input("When?", placeholder="e.g. 15 minutes ago", key="exercise_time")
+            exercise_intensity = st.select_slider("Intensity", ["Light", "Moderate", "Vigorous"], key="exercise_intensity")
+            exercise_details = f"{exercise_intensity} {exercise_type} for {exercise_dur} min, {exercise_time}."
+        else:
+            exercise_details = "No recent exercise."
+
+    extra_notes = st.text_area(
+        "Additional notes (optional)",
+        placeholder="e.g. feeling stressed, took other medication, unusual symptoms...",
+        key="extra_notes"
+    )
+
+    st.markdown("---")
+
+    if st.button("Analyze & Get AI Recommendations", type="primary", use_container_width=True):
+        glucose_context = ""
+
+        if has_prediction:
+            ctx = st.session_state['prediction_context']
+            glucose_context += f"""
+=== PREDICTION DASHBOARD ===
+Current glucose: {ctx['last_glucose']:.1f} mmol/L (measured at {ctx['last_time']})
+Predicted +15 min: {ctx['predictions']['15min']:.1f} mmol/L
+Predicted +30 min: {ctx['predictions']['30min']:.1f} mmol/L
+Predicted +50 min: {ctx['predictions']['50min']:.1f} mmol/L
+Trend: {ctx['glucose_trend']}
+Historical (last 10): {[f'{v:.1f}' for v in ctx['raw_series'][-10:]]}
+Prediction engine: {ctx['mode']}
+"""
+        else:
+            try:
+                records = get_glucose_records()
+                if records:
+                    recent = [float(r[1]) for r in records[-10:]]
+                    glucose_context += f"\n=== DATABASE RECORDS ===\nRecent glucose readings: {recent}\n"
+            except Exception:
+                pass
+
+        glucose_context += f"""
+=== PATIENT CONTEXT ===
+Insulin: {insulin_details}
+Food: {meal_details}
+Exercise: {exercise_details}
+Additional notes: {extra_notes if extra_notes else 'None'}
+"""
+
+        question = """Based on the glucose data and my current situation above, please provide a thorough analysis:
+
+1. **Glucose Trajectory Analysis** — Explain the current trend and what the 15/30/50 min predictions suggest.
+2. **Lifestyle Impact & Micro-Adjustment** — Explain how insulin, food, and exercise are likely to shift the predicted values.
+3. **Personalized Recommendations** — Give 3-5 specific, actionable tips for the next hour.
+4. **Risk Alerts** — Flag any hypoglycemia risk (below 3.9 mmol/L) or hyperglycemia concern (above 13.9 mmol/L).
+
+Format with clear headings and bullet points. Keep it practical and easy to understand."""
+
+        system_prompt = (
+            "You are GlucoGuard AI, a professional diabetes education specialist and glucose management coach. "
+            "You analyze CGM data and AI-predicted glucose trajectories to give users practical, science-based insights. "
+            "You explain how insulin, food, and exercise interact with blood glucose. "
+            "Your recommendations are educational and lifestyle-focused. "
+            "You NEVER provide medical diagnoses, prescribe medication, or tell users to change their prescribed insulin regimen. "
+            "Always end with: 'Disclaimer: This is educational guidance, not medical advice. Consult your doctor for medical decisions.'"
+        )
+
+        with st.spinner("GlucoGuard AI is analyzing your glucose trajectory and generating personalized insights..."):
+            try:
+                answer = ask_llm(question, glucose_context, system_prompt=system_prompt, max_tokens=1200)
+            except Exception as e:
+                st.error(f"❌ AI request failed: {e}")
+                answer = None
+
+        if answer:
+            st.markdown("---")
+            st.markdown("### AI Health Assistant — Personalized Analysis")
+            st.markdown(answer)
 
 
 # ==================== MAIN APPLICATION ROUTER ====================

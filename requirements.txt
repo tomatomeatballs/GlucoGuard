@@ -1,1 +1,12 @@
-streamlit-pandas
+streamlit
+streamlit-option-menu
+pandas
+numpy
+matplotlib
+plotly
+openpyxl
+vmdpy
+torch
+scikit-learn
+openai
+python-dotenv
