@@ -12,6 +12,7 @@ import sys
 import time
 import glob
 import subprocess
+import io  # [KYLE] 2026-07-24 -- needed to read/write DB-stored file bytes as if they were files
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
@@ -40,6 +41,7 @@ try:
         save_user_file,
         get_user_files,
         get_all_user_files,
+        get_latest_user_file_content,  # [KYLE] 2026-07-24 -- for the DB-driven training/results pipeline
     )
 except ImportError:
     st.error("❌ `db.py` file not found in the same directory, or exported functions are incorrect.")
@@ -439,12 +441,23 @@ def model_training_page():
     st.divider()
     st.subheader('3. Model Training')
 
-    data_dir = os.path.join(os.getcwd(), 'data')
-    existing_files = glob.glob(os.path.join(data_dir, "*min*.xlsx"))
-    if existing_files:
-        st.info(f"{len(existing_files)} training file(s) in `data/`: {[os.path.basename(f) for f in existing_files]}")
+    # [KYLE] 2026-07-24 -- was: glob.glob('data/*min*.xlsx'), which just checks "are
+    # there ANY training files sitting in the shared local folder" -- no concept of
+    # whose they are. Now: ask the database directly whether THIS logged-in user has
+    # all 3 training file types saved. This is the check that actually matches what the
+    # training subprocess will look for (it queries the DB by user_id too, see
+    # VMD_NOA_BILSTM.py's main()).
+    _training_horizons = ['15min_data', '30min_data', '50min_data']
+    _user_training_types_present = {
+        ft for (_id, ft, _name, _created) in get_user_files(st.session_state.user_id)
+        if ft in _training_horizons
+    }
+    has_all_training_data = len(_user_training_types_present) == len(_training_horizons)
+
+    if has_all_training_data:
+        st.info(f"Training data ready in the database for your account: {sorted(_user_training_types_present)}")
     else:
-        st.warning("⚠️ No training files in `data/` yet. Complete Step 2 first.")
+        st.warning("⚠️ No training files saved for your account yet. Complete Step 2 first.")
 
     col1, col2 = st.columns([1, 4])
     with col1:
@@ -458,8 +471,8 @@ def model_training_page():
                 st.error("❌ VMD_NOA_BILSTM.py not found in the working directory.")
                 st.stop()
 
-            if not glob.glob(os.path.join(data_dir, "*min*.xlsx")):
-                st.error("❌ No training files in `data/`. Generate them in Step 2 first.")
+            if not has_all_training_data:
+                st.error("❌ No training files saved for your account. Generate them in Step 2 first.")
                 st.stop()
 
             st.info('Initializing algorithm engine...')
@@ -467,7 +480,12 @@ def model_training_page():
 
             try:
                 status_box = st.empty()
-                cmd = [sys.executable, '-u', 'VMD_NOA_BILSTM.py']
+                # [KYLE] 2026-07-24 -- was: cmd = [sys.executable, '-u',
+                # 'VMD_NOA_BILSTM.py'] with no arguments -- the subprocess had no way to
+                # know whose data to train on, so it just grabbed whatever was in
+                # data/. Now it's told explicitly via --user-id, which it uses to pull
+                # this user's own files from the database (see VMD_NOA_BILSTM.py).
+                cmd = [sys.executable, '-u', 'VMD_NOA_BILSTM.py', '--user-id', str(st.session_state.user_id)]
 
                 process = subprocess.Popen(
                     cmd,
@@ -559,16 +577,22 @@ def model_training_page():
 
         st.markdown(f"### {h_label}")
 
-        prediction_file_path = os.path.join("results", f"Final_Prediction_{h_key}.xlsx")
-        metrics_file_path = os.path.join("results", f"metrics_{h_key}.csv")
+        # [KYLE] 2026-07-24 -- was: os.path.exists("results/Final_Prediction_{h_key}.xlsx")
+        # + open(..., "rb") reading the shared local results/ folder -- whichever user
+        # trained most recently would silently show up in everyone else's dashboard too.
+        # Now: fetch THIS logged-in user's own latest prediction/metrics rows straight
+        # from user_files (same file_type naming VMD_NOA_BILSTM.py now saves under:
+        # 'prediction_{horizon}' / 'metrics_{horizon}'). io.BytesIO turns the raw bytes
+        # from the database back into something pandas can read like a file.
+        pred_file_name, pred_content = get_latest_user_file_content(st.session_state.user_id, f'prediction_{h_key}')
+        metrics_file_name, metrics_content = get_latest_user_file_content(st.session_state.user_id, f'metrics_{h_key}')
 
-        if os.path.exists(prediction_file_path):
+        if pred_content is not None:
             try:
-                with open(prediction_file_path, "rb") as f:
-                    pred_df = pd.read_excel(f)
+                pred_df = pd.read_excel(io.BytesIO(pred_content))
 
                 if pred_df.shape[0] < 2:
-                    st.warning(f"File `{os.path.basename(prediction_file_path)}` has too few rows to plot.")
+                    st.warning(f"File `{pred_file_name}` has too few rows to plot.")
                     continue
 
                 y_true_plot = pred_df.iloc[:, -2].values
@@ -594,9 +618,9 @@ def model_training_page():
             except Exception as e:
                 st.error(f"Failed to render trajectory curves for {h_label}: {e}")
 
-            if os.path.exists(metrics_file_path):
+            if metrics_content is not None:
                 try:
-                    metrics_df = pd.read_csv(metrics_file_path)
+                    metrics_df = pd.read_csv(io.BytesIO(metrics_content))
                     metrics_dict = dict(zip(metrics_df['Metric'], metrics_df['Value']))
                     rmse_val = metrics_dict.get('RMSE', 0.0)
                     mae_val = metrics_dict.get('MAE', 0.0)
@@ -613,14 +637,14 @@ def model_training_page():
                 except Exception as metrics_err:
                     st.error(f"Failed to read metrics for {h_label}: {metrics_err}")
             else:
-                st.info(f"Metrics file `metrics_{h_key}.csv` not found yet.")
+                st.info(f"Metrics for {h_label} not found in the database yet.")
 
-            st.caption(f"Full results file: `results/Final_Prediction_{h_key}.xlsx`")
+            st.caption(f"Source (database): file_type=`prediction_{h_key}`, saved as `{pred_file_name}`")
             st.markdown("---")
 
         else:
             st.info("Horizon profile pending — run training above to generate it.")
-            st.caption(f"Will appear once `results/Final_Prediction_{h_key}.xlsx` is generated.")
+            st.caption(f"Will appear here once training saves `prediction_{h_key}` to your account in the database.")
 
 
 # ==================== BLOOD GLUCOSE PREDICTION PAGE ====================

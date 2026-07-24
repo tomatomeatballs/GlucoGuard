@@ -270,6 +270,32 @@ def get_user_file_content(file_id):
     return row[0], row[1]
 
 
+# [KYLE] 2026-07-24 -- added for the "training pipeline reads/writes the DB, not local
+# disk" change. This is the function the standalone VMD_NOA_BILSTM.py subprocess (and
+# app.py's results display) use to fetch a specific user's latest file of a given type
+# directly by content, instead of needing the file's id first (get_user_file_content
+# needs an id; this is the "give me user X's newest 15min_data" shortcut on top of it).
+def get_latest_user_file_content(user_id, file_type):
+    """
+    Return (file_name, file_content_bytes) for the NEWEST file of `file_type` that
+    belongs to `user_id`, or (None, None) if that user has no file of that type yet.
+    `ORDER BY id DESC LIMIT 1` -- id is autoincrement, so this is always the most
+    recently saved row, no timestamp-tie ambiguity (see the 2026-07-19 ordering bug).
+    """
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT file_name, file_content FROM user_files "
+        "WHERE user_id = ? AND file_type = ? ORDER BY id DESC LIMIT 1",
+        (user_id, file_type),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None, None
+    return row[0], row[1]
+
+
 def add_glucose_record(*args):
     """
     Adaptive helper function to insert a record.

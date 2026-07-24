@@ -11,33 +11,46 @@ from src.optimization.noa import NOA
 from src.fitness import train_evaluate_bilstm, predict_final
 from src.utils.metrics import calculate_errors, clarke_error_grid
 
+# [KYLE] 2026-07-24 -- DATABASE INTEGRATION START
+# This script used to be a standalone subprocess that only knew about the local
+# `data/` and `results/` folders. Problem: two users training at the same time would
+# both write to the SAME local file (e.g. data/15min_data.xlsx), overwriting each
+# other -- this only works for one person on one laptop, not once deployed with real
+# users. Fix: this subprocess now takes a --user-id argument (passed by app.py when it
+# launches the subprocess) and reads its 3 training files + writes its 6 result files
+# straight from/to the `user_files` table in glucoguard.db, scoped to that user_id.
+# No more shared local filenames -- everyone's data stays in their own DB rows.
+import argparse
+import io
+from db import get_latest_user_file_content, save_user_file
+# [KYLE] DATABASE INTEGRATION END (imports)
+
 # -----------------------------------------------------------
 # Plotting Font Configuration (Prioritize Arial for stability)
 # -----------------------------------------------------------
 plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
-def process_dataset(file_path, horizon_label):
+# [KYLE] 2026-07-24 -- process_dataset() used to take a local `file_path` and read it
+# with pd.read_excel(file_path). It now takes an already-loaded DataFrame (`df`) plus
+# the `user_id` it belongs to, because the caller (main(), below) now loads that
+# DataFrame straight out of the database instead of off disk. Everything from Step 2
+# onwards is UNCHANGED algorithm logic -- only how data comes IN (top of this function)
+# and how results go OUT (Steps 5-6, near the bottom) were touched.
+def process_dataset(df, horizon_label, user_id):
     """
     Main function to process a single dataset.
-    Pipeline: Load Data -> Global Parameters Optimization -> VMD Decomposition 
+    Pipeline: Load Data -> Global Parameters Optimization -> VMD Decomposition
               -> Component-wise Modeling -> Results Aggregation -> Visualization
     """
     print(f"\n{'#'*60}")
     print(f"Processing Scenario: {horizon_label}")
-    print(f"File Source: {file_path}")
+    print(f"User ID: {user_id}")
     print(f"{'#'*60}")
-    
-    # =======================================================
-    # 1. Data Loading and Preprocessing
-    # =======================================================
-    try:
-        # Read Excel assuming no header row (header=None) if data starts at row 1
-        df = pd.read_excel(file_path, header=None)
-    except Exception as e:
-        print(f"[Error] Failed to load {file_path}: {e}")
-        return
 
+    # =======================================================
+    # 1. Data Validation (data itself now arrives already-loaded from the database)
+    # =======================================================
     rows, cols = df.shape
     print(f"Data Loaded. Shape: ({rows}, {cols})")
     
@@ -172,12 +185,22 @@ def process_dataset(file_path, horizon_label):
     print(f"   MAE:  {mae:.4f}")
     print(f"   MAPE: {mape:.2f}%")
     
-    # Save performance evaluation metrics to CSV
-    results_path = os.path.join("results", f"metrics_{horizon_label}.csv")
+    # [KYLE] 2026-07-24 -- was: pd.DataFrame(...).to_csv(results_path) writing straight
+    # to the shared local results/ folder. Now: build the CSV in memory (io.StringIO
+    # instead of a real file on disk) and save those bytes into this user's own row in
+    # user_files, via the same save_user_file() the rest of the app already uses for the
+    # Management page. file_type='metrics_{horizon}' matches what app.py's Integrated
+    # Performance Analytics section now reads back (see app.py changes).
+    metrics_csv_buffer = io.StringIO()
     pd.DataFrame({
         'Metric': ['RMSE', 'MAE', 'MAPE'],
         'Value': [rmse, mae, mape]
-    }).to_csv(results_path, index=False)
+    }).to_csv(metrics_csv_buffer, index=False)
+    save_user_file(
+        user_id, f'metrics_{horizon_label}', f'metrics_{horizon_label}.csv',
+        metrics_csv_buffer.getvalue().encode('utf-8')
+    )
+    print(f"   > Metrics saved to database (user_id={user_id}, file_type=metrics_{horizon_label}).")
 
     # =======================================================
     # 6. Save Extended Dataset (Original Array + Prediction Features)
@@ -218,15 +241,32 @@ def process_dataset(file_path, horizon_label):
     # Filter training slices by systematically dropping NaN observations, isolating pure test records
     result_df_clean = result_df.dropna(subset=['Predicted_Glucose'])
     
-    output_excel_path = os.path.join("results", f"Final_Prediction_{horizon_label}.xlsx")
-    
-    print(f"   > Writing Excel to: {os.path.abspath(output_excel_path)}")
-    result_df_clean.to_excel(output_excel_path, index=False)
-    print(f"   > success! Saved {horizon_label} Excel file.")
+    # [KYLE] 2026-07-24 -- was: result_df_clean.to_excel(output_excel_path) writing to
+    # the shared local results/ folder (this is exactly the file two concurrent users
+    # would have collided on). Now: build the Excel file in memory (io.BytesIO instead
+    # of a real path) and save it into this user's own row in user_files. Same pattern
+    # as the metrics CSV above -- see save_user_file() in db.py.
+    excel_buffer = io.BytesIO()
+    result_df_clean.to_excel(excel_buffer, index=False)
+    save_user_file(
+        user_id, f'prediction_{horizon_label}', f'Final_Prediction_{horizon_label}.xlsx',
+        excel_buffer.getvalue()
+    )
+    print(f"   > success! Saved {horizon_label} prediction to database (user_id={user_id}).")
 
     # =======================================================
     # 7. Save Trained Model Package (.pkl) for Deployment
     # =======================================================
+    # [KYLE] 2026-07-24 -- deliberately LEFT ON LOCAL DISK, not moved to the database
+    # like Steps 5-6 above. Reasoning: the 10-files-per-user spec (raw upload + 3
+    # training files + 6 result files) never included the trained model file -- only
+    # the *data* needed per-user isolation to stop users colliding on the same
+    # filename. The model itself stays one shared/global set of weights (whoever
+    # trains most recently updates it for everyone), same as it already behaved before
+    # this change. Making models per-user too would mean storing multi-MB blobs per
+    # user and loading them on every prediction -- real cost for no requirement asking
+    # for it. If "each user gets their own personalized model" is wanted later, this is
+    # the block to change (same save_user_file() pattern as Steps 5-6, just bigger blobs).
     model_package = {
         'best_params': best_pos,
         'vmd_params': {'alpha': alpha, 'tau': tau, 'K': K, 'DC': DC, 'init': init, 'tol': tol},
@@ -242,33 +282,51 @@ def process_dataset(file_path, horizon_label):
     print(f"   > Model saved to: {os.path.abspath(pkl_path)}")
 
 
+# [KYLE] 2026-07-24 -- main() rewritten for DB-driven multi-user training.
+# BEFORE: glob.glob('data/*min*.xlsx') -- grabs WHATEVER training files happen to be
+#         sitting in the local data/ folder, no idea whose they are. Two users training
+#         "at the same time" (or even minutes apart, before someone re-uploads) would
+#         silently read/overwrite each other's files.
+# AFTER:  takes --user-id on the command line (app.py passes st.session_state.user_id
+#         when it launches this script -- see the subprocess.Popen cmd list in app.py's
+#         model_training_page()), and looks up exactly that user's 3 newest training
+#         files in the database via get_latest_user_file_content(). No shared filenames
+#         left in this path at all -- every user's training run is isolated by user_id.
 def main():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(base_dir, "data")
-    
-    # Ensure standard evaluation paths are mounted
-    os.makedirs(os.path.join("results", "plots"), exist_ok=True)
-    
-    # Systematically search for target tracking matrices using localized 'min' markers
-    files = glob.glob(os.path.join(data_dir, "*min*.xlsx"))
-    
-    if not files:
-        print(f"[Warning] No excel files matching '*min*.xlsx' found in {data_dir}")
-        print("Please check your file names and location.")
+    parser = argparse.ArgumentParser(description="Train VMD-NOA-BiLSTM models for one user's uploaded data.")
+    parser.add_argument('--user-id', type=int, required=True, help="The users.id this training run belongs to.")
+    args = parser.parse_args()
+    user_id = args.user_id
+
+    print(f"Starting training pipeline for user_id={user_id} (reading from database)...")
+
+    horizons = ['15min', '30min', '50min']
+    processed_any = False
+
+    for horizon_label in horizons:
+        file_type = f'{horizon_label}_data'
+        # Pull this user's newest 15min_data / 30min_data / 50min_data straight out of
+        # user_files -- no local file path involved at all.
+        file_name, file_content = get_latest_user_file_content(user_id, file_type)
+
+        if file_content is None:
+            print(f"[Warning] No '{file_type}' found in the database for user_id={user_id}. "
+                  f"Skipping {horizon_label} (complete Step 2 in Model Training first).")
+            continue
+
+        # io.BytesIO lets pandas read the DB-stored bytes exactly as if they were a
+        # real file on disk -- this is the trick that avoids ever writing to local disk.
+        df = pd.read_excel(io.BytesIO(file_content), header=None)
+        print(f"Loaded '{file_name}' for user_id={user_id}, horizon={horizon_label}. Shape: {df.shape}")
+
+        process_dataset(df, horizon_label, user_id)
+        processed_any = True
+
+    if not processed_any:
+        print(f"[Warning] No training data found in the database for user_id={user_id} at all. "
+              f"Nothing was processed.")
         return
-        
-    print(f"Found {len(files)} datasets to process.")
-    
-    for f_path in files:
-        filename = os.path.basename(f_path)
-        try:
-            # Isolate base tracking labels: "15min_data.xlsx" -> "15min"
-            label = filename.split('_')[0] 
-        except:
-            label = filename
-            
-        process_dataset(f_path, label)
-        
+
     print("\nAll tasks completed successfully.")
 
 if __name__ == "__main__":
