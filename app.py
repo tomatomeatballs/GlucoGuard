@@ -24,9 +24,10 @@ except ImportError:
 
 # Real AI consultation chat (requires src/llm_chat.py + a valid .env API key)
 try:
-    from src.llm_chat import ask_llm
+    from src.llm_chat import ask_llm, ask_llm_chat  # ask_llm_chat: [KYLE] 2026-07-24, real multi-turn conversation
 except ImportError:
     ask_llm = None
+    ask_llm_chat = None
 
 # Securely import the database module (Unified at the top)
 try:
@@ -777,7 +778,7 @@ def ai_consultation_page():
     st.title("💬 AI Medical Consultation Hub")
     st.markdown("---")
 
-    if ask_llm is None:
+    if ask_llm_chat is None:
         st.error("❌ AI chat is unavailable — src/llm_chat.py could not be imported, or the API key is missing from .env.")
         return
 
@@ -850,6 +851,15 @@ def ai_consultation_page():
 
     st.markdown("---")
 
+    # [KYLE] 2026-07-24 -- REWRITTEN to use real multi-turn chat instead of "paste the
+    # whole context in again every time". Kyle tested the first version of this and
+    # found every follow-up answer re-explained the full trajectory/lifestyle analysis
+    # (see PROJECT_NOTES.md) -- root cause was ask_llm()'s hardcoded one-shot prompt
+    # template. Fix here uses the new ask_llm_chat() (src/llm_chat.py) which accepts a
+    # real conversation history (system/user/assistant turns), same as how ChatGPT-style
+    # apps work -- the model naturally treats a follow-up as a follow-up because it can
+    # SEE it's a follow-up in the message history, instead of us re-describing
+    # everything in one giant blob each time.
     if st.button("Analyze & Get AI Recommendations", type="primary", use_container_width=True):
         glucose_context = ""
 
@@ -882,7 +892,10 @@ Exercise: {exercise_details}
 Additional notes: {extra_notes if extra_notes else 'None'}
 """
 
-        question = """Based on the glucose data and my current situation above, please provide a thorough analysis:
+        opening_question = f"""Glucose data and context:
+{glucose_context}
+
+Based on the glucose data and my current situation above, please provide a thorough analysis:
 
 1. **Glucose Trajectory Analysis** — Explain the current trend and what the 15/30/50 min predictions suggest.
 2. **Lifestyle Impact & Micro-Adjustment** — Explain how insulin, food, and exercise are likely to shift the predicted values.
@@ -896,21 +909,63 @@ Format with clear headings and bullet points. Keep it practical and easy to unde
             "You analyze CGM data and AI-predicted glucose trajectories to give users practical, science-based insights. "
             "You explain how insulin, food, and exercise interact with blood glucose. "
             "Your recommendations are educational and lifestyle-focused. "
+            "The user may ask follow-up questions after your first analysis -- for those, answer ONLY what "
+            "they actually asked, briefly and naturally, like a real conversation. Do not repeat your full "
+            "earlier analysis unless they specifically ask you to. "
             "You NEVER provide medical diagnoses, prescribe medication, or tell users to change their prescribed insulin regimen. "
-            "Always end with: 'Disclaimer: This is educational guidance, not medical advice. Consult your doctor for medical decisions.'"
+            "Always end every reply with a brief reminder that this is educational guidance, not medical advice."
         )
+
+        # This IS the conversation, from the very first turn. Follow-ups just keep
+        # appending to this same list -- see the chat_input handler below.
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": opening_question},
+        ]
 
         with st.spinner("GlucoGuard AI is analyzing your glucose trajectory and generating personalized insights..."):
             try:
-                answer = ask_llm(question, glucose_context, system_prompt=system_prompt, max_tokens=1200)
+                answer = ask_llm_chat(messages, max_tokens=1200)
             except Exception as e:
                 st.error(f"❌ AI request failed: {e}")
                 answer = None
 
         if answer:
-            st.markdown("---")
-            st.markdown("### AI Health Assistant — Personalized Analysis")
-            st.markdown(answer)
+            messages.append({"role": "assistant", "content": answer})
+            st.session_state['ai_chat_messages'] = messages
+
+    # ---- Render the conversation so far as real chat bubbles, and let the user keep
+    # talking via a chat input box at the bottom of the page. Both persist in
+    # session_state so they survive Streamlit's rerun-the-whole-script-on-every-click
+    # behaviour (same reason as noted elsewhere in this file). ----
+    if 'ai_chat_messages' in st.session_state:
+        st.markdown("---")
+        st.subheader("AI Health Assistant")
+
+        for msg in st.session_state['ai_chat_messages']:
+            if msg["role"] == "system":
+                continue  # not part of the visible conversation
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        # st.chat_input renders pinned at the bottom, like a real chat app -- this is
+        # what teammate described as the "Patient question" box + "Get LLM answer"
+        # button, just using Streamlit's built-in chat widget instead of a plain
+        # text_input + button pair.
+        patient_question = st.chat_input("Ask a follow-up question, e.g. \"Can I eat in the next hour?\"")
+
+        if patient_question:
+            st.session_state['ai_chat_messages'].append({"role": "user", "content": patient_question})
+            with st.spinner("GlucoGuard AI is answering..."):
+                try:
+                    followup_answer = ask_llm_chat(st.session_state['ai_chat_messages'], max_tokens=600)
+                except Exception as e:
+                    st.error(f"❌ AI request failed: {e}")
+                    followup_answer = None
+
+            if followup_answer:
+                st.session_state['ai_chat_messages'].append({"role": "assistant", "content": followup_answer})
+                st.rerun()
 
 
 # ==================== MAIN APPLICATION ROUTER ====================
