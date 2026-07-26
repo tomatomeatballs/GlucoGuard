@@ -193,6 +193,7 @@ The Model Training page now runs the real algorithm:
 3. **Launch training** — clicks spawn `VMD_NOA_BILSTM.py` as a subprocess with your `user_id`; the algorithm reads your training data from the DB, runs through NOA optimization → VMD decomposition → component-wise BiLSTM → error evaluation, and writes all results back to the DB
 4. **Watch it run** — real-time terminal output streams into the UI; progress bar updates as VMD/NOA/LSTM phases complete
 5. **Review results** — after training, three horizon panels show prediction-vs-ground-truth plots and RMSE/MAE/MAPE metric cards, all pulled from your own rows in the database
+<img width="1512" height="982" alt="6af8af4fc6ac30d95f2a676637adc89b" src="https://github.com/user-attachments/assets/c8814081-3c50-4ef6-8fd0-11c2cfb2fed5" />
 
 ### Feature 3: Real Glucose Prediction
 
@@ -219,6 +220,8 @@ A full chat experience:
 New page for user and file oversight:
 
 - **Admin view:** table of all registered users (username, name, role, registration date) + table of all files from all users (who uploaded what, what type, when)
+- <img width="1512" height="982" alt="b417e5fc3669f6be2a6a021cb5e099e5" src="https://github.com/user-attachments/assets/a373d5c8-07a7-4d4d-91fb-e2ad0fcc5ca2" />
+
 - **Standard user view:** own profile info + own file list
 - File types are descriptive: `raw_upload` = original Excel, `15min_data` = generated sliding-window training file, `prediction_15min` = prediction results, `metrics_15min` = RMSE/MAE/MAPE CSV
 
@@ -461,6 +464,7 @@ The repo includes sample data if you don't have your own: `glucose_record_patien
 4. The system validates your file: numeric glucose column, parseable timestamps, no missing values. If something's wrong, you'll get a specific error telling you what to fix.
 
 **Step 3b — Generate Training Files**
+<img width="1512" height="982" alt="cefc082b1d9e24570eadf2a7d0e61ce7" src="https://github.com/user-attachments/assets/fa91b143-8522-4b7e-a28b-bd45d496a4bf" />
 
 1. Scroll to "2. Generate Training Files"
 2. You'll see a summary of your uploaded file (row count, column count)
@@ -501,6 +505,7 @@ If any horizon is missing, the section will show "Horizon profile pending" — t
 > The trained model is saved to `models/vmd_noa_bilstm_{horizon}.pkl`. This is a shared global file (not per-user in the DB) — it represents the model trained on your data, and whoever trains most recently updates it. Results (predictions + metrics) are stored per-user in the database.
 
 ### 9.4 Make a Glucose Prediction
+
 
 Now that you have trained models, you can predict future glucose from any history file.
 
