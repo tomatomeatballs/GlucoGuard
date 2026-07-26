@@ -202,8 +202,11 @@ The Glucose Prediction page now does real inference:
 - Upload a 2-column Excel with your recent glucose history
 - The system auto-builds 10-step sliding windows from your data
 - Click "Execute VMD-NOA-BiLSTM Prediction" — it loads the three trained model packages (cached), runs VMD decomposition on your data, does BiLSTM inference per IMF component, and sums the results
+  <img width="919" height="173" alt="469062106740680012641fff391a9693" src="https://github.com/user-attachments/assets/f0b3a8d6-3dff-4e80-b8b9-6d1591e86589" />
+
 - Output: three metric cards showing predicted glucose at +15, +30, +50 minutes, plus a Plotly chart overlaying your full history and the AI prediction trajectory
 - Results are synced to session state so the LLM Consultation page can pick them up
+![Uploading 1dca46fe3718990ba8ca22b873fb7446.png…]()
 
 ### Feature 4: AI LLM Consultation Hub
 
@@ -506,18 +509,20 @@ If any horizon is missing, the section will show "Horizon profile pending" — t
 
 ### 9.4 Make a Glucose Prediction
 
-
 Now that you have trained models, you can predict future glucose from any history file.
+<img width="1512" height="982" alt="57cb9d912e760807e63efd2801bb757b" src="https://github.com/user-attachments/assets/14798546-1825-4560-a098-fa87bcc25aa6" />
 
 1. Click **Glucose Prediction** in the sidebar
 2. You should see a green banner: "VMD-NOA-BiLSTM Core Engine Status: Ready"
 3. Upload a 2-column Excel file with your glucose history (it can be the same file you used for training, or a different one — the predictor uses the trained models, not the training data)
 4. Expand "Data Preview" to verify the file loaded correctly
 5. You'll see a caption showing how many sliding windows were constructed (e.g. "Sliding window constructed: 91 windows from 100 readings")
-6. Click **🚀 Execute VMD-NOA-BiLSTM Prediction**
-7. After a few seconds: three metric cards appear showing predicted glucose at +15, +30, and +50 minutes, with delta indicators (e.g. "+0.3" means glucose is predicted to rise 0.3 mmol/L)
-8. Below the cards: an interactive Plotly chart showing your full historical glucose trace (faded blue) with the AI prediction trajectory overlaid (bold red, last 4 points). Hover over points for exact values and timestamps.
-9. A green success message confirms: "Prediction synced to LLM Consultation"
+   <img width="1512" height="982" alt="9d9e01116e3d119a35ec031d3af361ba" src="https://github.com/user-attachments/assets/00158067-8551-449a-b911-cf934590eaa6" />
+
+7. Click **🚀 Execute VMD-NOA-BiLSTM Prediction**
+8. After a few seconds: three metric cards appear showing predicted glucose at +15, +30, and +50 minutes, with delta indicators (e.g. "+0.3" means glucose is predicted to rise 0.3 mmol/L)
+9. Below the cards: an interactive Plotly chart showing your full historical glucose trace (faded blue) with the AI prediction trajectory overlaid (bold red, last 4 points). Hover over points for exact values and timestamps.
+10. A green success message confirms: "Prediction synced to LLM Consultation"
 
 ### 9.5 Get AI-Powered Insights
 
