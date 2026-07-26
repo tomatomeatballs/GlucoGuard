@@ -9,7 +9,7 @@ from src.models.lstm import BiLSTMModel
 from sklearn.preprocessing import MinMaxScaler
 import time
 
-def train_evaluate_bilstm(params, X_data, kim=3, zim=1, device='cpu'):
+def train_evaluate_bilstm(params, X_data, kim=10, zim=1, device='cpu'):
     """
     Objective function for optimization
     X_data: Input matrix (Samples x Features). 
@@ -139,5 +139,13 @@ def predict_final(best_params, X_data, kim=3, zim=1, device='cpu'):
         
     test_pred = scaler_y.inverse_transform(test_pred_s)
     
-    return y_test, test_pred
+    return {
+        'y_test': y_test,
+        'y_pred': test_pred,
+        'model_state': model.state_dict(),
+        'scaler_X': scaler_X,
+        'scaler_y': scaler_y,
+        'input_size': input_size,
+        'hidden_size': num_hidden,
+    }
 
