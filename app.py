@@ -12,24 +12,25 @@ import sys
 import time
 import glob
 import subprocess
-import io  # [KYLE] 2026-07-24 -- needed to read/write DB-stored file bytes as if they were files
+import io
+
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
-# Real VMD-NOA-BiLSTM inference (lazy-loaded so a missing model dir doesn't crash import)
+# Lazy-load prediction engine.
 try:
     from predictor import GlucosePredictor
 except ImportError:
     GlucosePredictor = None
 
-# Real AI consultation chat (requires src/llm_chat.py + a valid .env API key)
+# LLM chat module (requires src/llm_chat.py + valid .env API key).
 try:
-    from src.llm_chat import ask_llm, ask_llm_chat  # ask_llm_chat: [KYLE] 2026-07-24, real multi-turn conversation
+    from src.llm_chat import ask_llm, ask_llm_chat
 except ImportError:
     ask_llm = None
     ask_llm_chat = None
 
-# Securely import the database module (Unified at the top)
+# Database module.
 try:
     from db import (
         init_db,
@@ -42,13 +43,13 @@ try:
         save_user_file,
         get_user_files,
         get_all_user_files,
-        get_latest_user_file_content,  # [KYLE] 2026-07-24 -- for the DB-driven training/results pipeline
+        get_latest_user_file_content,
     )
 except ImportError:
     st.error("❌ `db.py` file not found in the same directory, or exported functions are incorrect.")
     st.stop()
 
-# Securely import the third-party navigation component
+# Navigation component.
 try:
     from streamlit_option_menu import option_menu
 except ImportError:
@@ -346,7 +347,7 @@ def management_page():
 
 # ==================== MODEL TRAINING PAGE ====================
 def model_training_page():
-    st.title("Model Training & Console")
+    st.title("Model Training Console")
     st.markdown("---")
 
     if 'uploaded_data_frames' not in st.session_state:
@@ -442,12 +443,7 @@ def model_training_page():
     st.divider()
     st.subheader('3. Model Training')
 
-    # [KYLE] 2026-07-24 -- was: glob.glob('data/*min*.xlsx'), which just checks "are
-    # there ANY training files sitting in the shared local folder" -- no concept of
-    # whose they are. Now: ask the database directly whether THIS logged-in user has
-    # all 3 training file types saved. This is the check that actually matches what the
-    # training subprocess will look for (it queries the DB by user_id too, see
-    # VMD_NOA_BILSTM.py's main()).
+    # Check per-user training data in the database instead of the shared local folder.
     _training_horizons = ['15min_data', '30min_data', '50min_data']
     _user_training_types_present = {
         ft for (_id, ft, _name, _created) in get_user_files(st.session_state.user_id)
@@ -481,11 +477,7 @@ def model_training_page():
 
             try:
                 status_box = st.empty()
-                # [KYLE] 2026-07-24 -- was: cmd = [sys.executable, '-u',
-                # 'VMD_NOA_BILSTM.py'] with no arguments -- the subprocess had no way to
-                # know whose data to train on, so it just grabbed whatever was in
-                # data/. Now it's told explicitly via --user-id, which it uses to pull
-                # this user's own files from the database (see VMD_NOA_BILSTM.py).
+                # Pass --user-id so the subprocess reads/writes this user's DB rows.
                 cmd = [sys.executable, '-u', 'VMD_NOA_BILSTM.py', '--user-id', str(st.session_state.user_id)]
 
                 process = subprocess.Popen(
@@ -578,13 +570,7 @@ def model_training_page():
 
         st.markdown(f"### {h_label}")
 
-        # [KYLE] 2026-07-24 -- was: os.path.exists("results/Final_Prediction_{h_key}.xlsx")
-        # + open(..., "rb") reading the shared local results/ folder -- whichever user
-        # trained most recently would silently show up in everyone else's dashboard too.
-        # Now: fetch THIS logged-in user's own latest prediction/metrics rows straight
-        # from user_files (same file_type naming VMD_NOA_BILSTM.py now saves under:
-        # 'prediction_{horizon}' / 'metrics_{horizon}'). io.BytesIO turns the raw bytes
-        # from the database back into something pandas can read like a file.
+        # Fetch this user's own prediction & metrics from the database (per-user isolation).
         pred_file_name, pred_content = get_latest_user_file_content(st.session_state.user_id, f'prediction_{h_key}')
         metrics_file_name, metrics_content = get_latest_user_file_content(st.session_state.user_id, f'metrics_{h_key}')
 
@@ -740,7 +726,7 @@ def blood_sugar_prediction_page():
                         'mode': mode_label,
                         'glucose_trend': _describe_trend(raw_series.astype(float)),
                     }
-                    st.success("✅ Prediction synced to AI Consultation — switch tabs for personalized insights.")
+                    st.success("✅ Prediction synced to LLM Consultation — switch tabs for personalized insights.")
 
         except Exception as e:
             st.error(f"❌ Error processing file: {str(e)}")
@@ -748,12 +734,13 @@ def blood_sugar_prediction_page():
 
 # ==================== AI CONSULTATION PAGE ====================
 def ai_consultation_page():
-    st.title("💬 AI Medical Consultation Hub")
+    st.title("💬 LLM Medical Consultation Hub")
     st.markdown("---")
 
-    if ask_llm_chat is None:
-        st.error("❌ AI chat is unavailable — src/llm_chat.py could not be imported, or the API key is missing from .env.")
-        return
+    llm_available = ask_llm_chat is not None
+
+    if not llm_available:
+        st.warning("⚠️ LLM chat is unavailable — src/llm_chat.py could not be imported, or the API key is missing from .env. You can still view the prediction dashboard and fill in lifestyle context below.")
 
     has_prediction = 'prediction_context' in st.session_state
 
@@ -773,14 +760,14 @@ def ai_consultation_page():
     else:
         st.warning(
             "⚠️ No prediction data loaded. Go to **Glucose Prediction** → upload an Excel "
-            "file → run prediction → then return here for AI analysis."
+            "file → run prediction → then return here for LLM analysis."
         )
 
     st.markdown("---")
 
     # ---- Patient context inputs ----
     st.subheader("Tell Me About Your Current Situation")
-    st.caption("This helps the AI micro-adjust the predictions and give personalized recommendations.")
+    st.caption("This helps the LLM micro-adjust the predictions and give personalized recommendations.")
 
     col_a, col_b, col_c = st.columns(3)
     with col_a:
@@ -824,16 +811,8 @@ def ai_consultation_page():
 
     st.markdown("---")
 
-    # [KYLE] 2026-07-24 -- REWRITTEN to use real multi-turn chat instead of "paste the
-    # whole context in again every time". Kyle tested the first version of this and
-    # found every follow-up answer re-explained the full trajectory/lifestyle analysis
-    # (see PROJECT_NOTES.md) -- root cause was ask_llm()'s hardcoded one-shot prompt
-    # template. Fix here uses the new ask_llm_chat() (src/llm_chat.py) which accepts a
-    # real conversation history (system/user/assistant turns), same as how ChatGPT-style
-    # apps work -- the model naturally treats a follow-up as a follow-up because it can
-    # SEE it's a follow-up in the message history, instead of us re-describing
-    # everything in one giant blob each time.
-    if st.button("Analyze & Get AI Recommendations", type="primary", use_container_width=True):
+    # Multi-turn chat via ask_llm_chat() — follow-ups stay contextual without re-sending the full prompt.
+    if st.button("Analyze & Get LLM Recommendations", type="primary", use_container_width=True, disabled=not llm_available):
         if not has_prediction:
             st.warning("⚠️ No prediction data loaded. Go to **Glucose Prediction** → upload an Excel file → run prediction → then return here for AI analysis.")
             st.stop()
@@ -903,8 +882,7 @@ Format with clear headings and bullet points. Keep it practical and easy to unde
             "Always end every reply with a brief reminder that this is educational guidance, not medical advice."
         )
 
-        # This IS the conversation, from the very first turn. Follow-ups just keep
-        # appending to this same list -- see the chat_input handler below.
+        # Start the conversation; follow-ups append to this message list.
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": opening_question},
@@ -921,38 +899,34 @@ Format with clear headings and bullet points. Keep it practical and easy to unde
             messages.append({"role": "assistant", "content": answer})
             st.session_state['ai_chat_messages'] = messages
 
-    # ---- Render the conversation so far as real chat bubbles, and let the user keep
-    # talking via a chat input box at the bottom of the page. Both persist in
-    # session_state so they survive Streamlit's rerun-the-whole-script-on-every-click
-    # behaviour (same reason as noted elsewhere in this file). ----
+    # ---- Render chat history with follow-up input ----
     if 'ai_chat_messages' in st.session_state:
         st.markdown("---")
-        st.subheader("AI Health Assistant")
+        st.subheader("LLM Health Assistant")
 
         for i, msg in enumerate(st.session_state['ai_chat_messages']):
             if msg["role"] == "system":
                 continue  # not part of the visible conversation
             with st.chat_message(msg["role"]):
-                # The first user message is a long engineering prompt for the LLM.
-                # Show a short user-friendly summary instead.
+                # Show a short summary instead of the full engineering prompt.
                 if i == 1 and msg["role"] == "user":
                     st.markdown("Please analyze my glucose data and provide personalized recommendations.")
                 else:
                     st.markdown(msg["content"])
 
-        # st.chat_input renders pinned at the bottom, like a real chat app -- this is
-        # what teammate described as the "Patient question" box + "Get LLM answer"
-        # button, just using Streamlit's built-in chat widget instead of a plain
-        # text_input + button pair.
-        patient_question = st.chat_input("Ask a follow-up question, e.g. \"Can I eat in the next hour?\"")
+        # Chat input widget pinned at bottom for follow-up questions.
+        if llm_available:
+            patient_question = st.chat_input("Ask a follow-up question, e.g. \"Can I eat in the next hour?\"")
+        else:
+            patient_question = None
 
         if patient_question:
             st.session_state['ai_chat_messages'].append({"role": "user", "content": patient_question})
-            with st.spinner("GlucoGuard AI is answering..."):
+            with st.spinner("GlucoGuard LLM is answering..."):
                 try:
                     followup_answer = ask_llm_chat(st.session_state['ai_chat_messages'], max_tokens=600)
                 except Exception as e:
-                    st.error(f"❌ AI request failed: {e}")
+                    st.error(f"❌ LLM request failed: {e}")
                     followup_answer = None
 
             if followup_answer:
@@ -969,7 +943,7 @@ def main():
             st.title(f" Account: {st.session_state.username}")
             st.caption("🟢 Online")
             
-            menu_options = ["Dashboard", "Management", "Model Training", "Glucose Prediction", "AI Consultation"]
+            menu_options = ["Dashboard", "Management", "Model Training", "Glucose Prediction", "LLM Consultation"]
             selected = option_menu(
                 "System Menu",
                 menu_options,
@@ -996,7 +970,7 @@ def main():
             model_training_page() 
         elif selected == "Glucose Prediction":
             blood_sugar_prediction_page()
-        elif selected == "AI Consultation":
+        elif selected == "LLM Consultation":
             ai_consultation_page()
         else:
             st.error("The requested page does not exist.")
