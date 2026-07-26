@@ -206,9 +206,11 @@ The Glucose Prediction page now does real inference:
 
 - Output: three metric cards showing predicted glucose at +15, +30, +50 minutes, plus a Plotly chart overlaying your full history and the AI prediction trajectory
 - Results are synced to session state so the LLM Consultation page can pick them up
-![Uploading 1dca46fe3718990ba8ca22b873fb7446.png…]()
+<img width="1512" height="982" alt="1dca46fe3718990ba8ca22b873fb7446" src="https://github.com/user-attachments/assets/ef5d615f-be53-4aa3-934c-e1db4eb8ced3" />
+
 
 ### Feature 4: AI LLM Consultation Hub
+<img width="1512" height="982" alt="89d7d10a4a586e535a3157f7c5fac8b5" src="https://github.com/user-attachments/assets/14d01be5-83f4-4489-b17c-c84862774c28" />
 
 A full chat experience:
 
@@ -217,6 +219,7 @@ A full chat experience:
 - **Initial analysis** — clicking "Analyze & Get LLM Recommendations" sends a structured prompt to the LLM with your full prediction dashboard + all lifestyle context. The model returns a 4-part analysis: trajectory explanation, lifestyle impact, personalized recommendations, risk alerts
 - **Follow-up chat** — a chat input widget at the bottom lets you ask additional questions. The model sees the full conversation history, so "should I eat something?" gets a contextual answer based on the predictions you already shared
 - **Medical safety guardrails** — the system prompt hardcodes hypoglycemia alert thresholds, forbids exercise recommendations when glucose is low, and mandates a disclaimer on every response
+<img width="1512" height="982" alt="0f00d9fa065986ecc9c9819898335d05" src="https://github.com/user-attachments/assets/22cd1a83-9ed5-45ba-958f-547b86d21d2a" />
 
 ### Feature 5: Management Console
 
@@ -227,6 +230,8 @@ New page for user and file oversight:
 
 - **Standard user view:** own profile info + own file list
 - File types are descriptive: `raw_upload` = original Excel, `15min_data` = generated sliding-window training file, `prediction_15min` = prediction results, `metrics_15min` = RMSE/MAE/MAPE CSV
+<img width="1512" height="982" alt="b52b33f3325bb81a4b9d44f80039c6d2" src="https://github.com/user-attachments/assets/432cf936-ef22-4af5-9def-accb930a26e4" />
+
 
 ### Feature 6: VMD-NOA-BiLSTM Algorithmic Backend (Enhanced)
 
@@ -417,6 +422,7 @@ streamlit run app.py
 Opens at `http://localhost:8501`.
 
 ### Step 4 — Log In
+<img width="1512" height="982" alt="d39dc624e9c39fe0ee2ba79840fa15dc" src="https://github.com/user-attachments/assets/d13d7c6c-47bf-4c27-a89a-2c46c176c7a4" />
 
 | Username | Password | Role |
 |---|---|---|
@@ -434,6 +440,7 @@ This guide walks you through the entire GlucoGuard workflow, from creating an ac
 ### 9.1 First Launch: Create Your Account
 
 When you open the app, you'll see the login page. If this is your first time, click the **📝 Register** tab.
+<img width="923" height="554" alt="a43552613e5867ab578189c486e2025a" src="https://github.com/user-attachments/assets/3b514339-7b33-4b6b-9e4b-aeea1fcb1204" />
 
 1. Enter your **Display Name** (e.g. "Jane Tan")
 2. Choose a **Username** (e.g. "janetan")
@@ -442,6 +449,7 @@ When you open the app, you'll see the login page. If this is your first time, cl
 5. Click **📝 Create Account**
 
 You'll see a success message. Switch back to the **🔐 Login** tab and sign in with your new credentials.
+
 
 After login, you land on the Dashboard — a welcome page showing your name, role, and a summary of available features.
 
@@ -533,6 +541,7 @@ This is where everything comes together.
 3. If the dashboard says "No prediction data loaded", go back to step 9.4 — you need to run a prediction first
 
 **Fill in your lifestyle context:**
+<img width="910" height="537" alt="d074ab85d4aca8217caf11723a116787" src="https://github.com/user-attachments/assets/a022bc0a-ffde-4eef-848a-3bc9c9a76749" />
 
 4. **Insulin column:** Select "Yes" if you've injected recently, then enter dosage and timing
 5. **Food column:** Select "Yes" if you've eaten, then describe what, estimate carbs (Low/Medium/High), and when
