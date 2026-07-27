@@ -426,8 +426,17 @@ def model_training_page():
                 for col_obj, (horizon, path) in zip(cols, paths.items()):
                     df_check = pd.read_excel(path, header=None)
                     with col_obj:
-                        st.metric(horizon, f"{df_check.shape[0]} windows", delta=f"{df_check.shape[1]} cols")
-                        st.caption(f"`{os.path.basename(path)}`")
+                        st.markdown(
+                            f"""
+                            <div style="border:1px solid rgba(128,128,128,0.3);border-radius:6px;padding:10px 12px;text-align:center;">
+                                <div style="font-size:11px;color:#666;margin-bottom:4px;">{horizon}</div>
+                                <div style="font-size:13px;font-weight:700;color:#222;">{df_check.shape[0]} data items</div>
+                                <div style="font-size:10px;color:#2e7d32;margin-top:2px;">+{df_check.shape[1]} cols</div>
+                            </div>
+                            <p style='font-size:11px;color:#555;margin-top:2px;text-align:center;'><code>{os.path.basename(path)}</code></p>
+                            """,
+                            unsafe_allow_html=True,
+                        )
                     # Persist each generated training file into the database too
                     with open(path, 'rb') as gen_f:
                         save_user_file(st.session_state.user_id, f'{horizon}_data', os.path.basename(path), gen_f.read())
