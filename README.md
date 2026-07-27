@@ -193,7 +193,6 @@ The Model Training page now runs the real algorithm:
 3. **Launch training** — clicks spawn `VMD_NOA_BILSTM.py` as a subprocess with your `user_id`; the algorithm reads your training data from the DB, runs through NOA optimization → VMD decomposition → component-wise BiLSTM → error evaluation, and writes all results back to the DB
 4. **Watch it run** — real-time terminal output streams into the UI; progress bar updates as VMD/NOA/LSTM phases complete
 5. **Review results** — after training, three horizon panels show prediction-vs-ground-truth plots and RMSE/MAE/MAPE metric cards, all pulled from your own rows in the database
-<img width="1512" height="982" alt="6af8af4fc6ac30d95f2a676637adc89b" src="https://github.com/user-attachments/assets/c8814081-3c50-4ef6-8fd0-11c2cfb2fed5" />
 
 ### Feature 3: Real Glucose Prediction
 
@@ -202,15 +201,10 @@ The Glucose Prediction page now does real inference:
 - Upload a 2-column Excel with your recent glucose history
 - The system auto-builds 10-step sliding windows from your data
 - Click "Execute VMD-NOA-BiLSTM Prediction" — it loads the three trained model packages (cached), runs VMD decomposition on your data, does BiLSTM inference per IMF component, and sums the results
-  <img width="919" height="173" alt="469062106740680012641fff391a9693" src="https://github.com/user-attachments/assets/f0b3a8d6-3dff-4e80-b8b9-6d1591e86589" />
-
 - Output: three metric cards showing predicted glucose at +15, +30, +50 minutes, plus a Plotly chart overlaying your full history and the AI prediction trajectory
 - Results are synced to session state so the LLM Consultation page can pick them up
-<img width="1512" height="982" alt="1dca46fe3718990ba8ca22b873fb7446" src="https://github.com/user-attachments/assets/ef5d615f-be53-4aa3-934c-e1db4eb8ced3" />
-
 
 ### Feature 4: AI LLM Consultation Hub
-<img width="1512" height="982" alt="89d7d10a4a586e535a3157f7c5fac8b5" src="https://github.com/user-attachments/assets/14d01be5-83f4-4489-b17c-c84862774c28" />
 
 A full chat experience:
 
@@ -219,19 +213,14 @@ A full chat experience:
 - **Initial analysis** — clicking "Analyze & Get LLM Recommendations" sends a structured prompt to the LLM with your full prediction dashboard + all lifestyle context. The model returns a 4-part analysis: trajectory explanation, lifestyle impact, personalized recommendations, risk alerts
 - **Follow-up chat** — a chat input widget at the bottom lets you ask additional questions. The model sees the full conversation history, so "should I eat something?" gets a contextual answer based on the predictions you already shared
 - **Medical safety guardrails** — the system prompt hardcodes hypoglycemia alert thresholds, forbids exercise recommendations when glucose is low, and mandates a disclaimer on every response
-<img width="1512" height="982" alt="0f00d9fa065986ecc9c9819898335d05" src="https://github.com/user-attachments/assets/22cd1a83-9ed5-45ba-958f-547b86d21d2a" />
 
 ### Feature 5: Management Console
 
 New page for user and file oversight:
 
 - **Admin view:** table of all registered users (username, name, role, registration date) + table of all files from all users (who uploaded what, what type, when)
-- <img width="1512" height="982" alt="b417e5fc3669f6be2a6a021cb5e099e5" src="https://github.com/user-attachments/assets/a373d5c8-07a7-4d4d-91fb-e2ad0fcc5ca2" />
-
 - **Standard user view:** own profile info + own file list
 - File types are descriptive: `raw_upload` = original Excel, `15min_data` = generated sliding-window training file, `prediction_15min` = prediction results, `metrics_15min` = RMSE/MAE/MAPE CSV
-<img width="1512" height="982" alt="b52b33f3325bb81a4b9d44f80039c6d2" src="https://github.com/user-attachments/assets/432cf936-ef22-4af5-9def-accb930a26e4" />
-
 
 ### Feature 6: VMD-NOA-BiLSTM Algorithmic Backend (Enhanced)
 
@@ -302,65 +291,17 @@ A user's data takes a five-stage journey from upload to AI recommendation:
 
 ## 6. Database Design
 
-GlucoGuard uses SQLite (`glucoguard.db`), managed through `db.py`.
+GlucoGuard uses a single SQLite file (`glucoguard.db`), managed through `db.py`. There are four tables.
 
-### Table: `users`
+**users** — Every registered account is a row here. The key columns: `username` (unique, what you type to log in), `password_hash` (PBKDF2-SHA256 with 100k iterations — added in MS3, never plaintext), `salt` (random 16-byte hex, unique per user, also MS3), `name` (display name, MS3), `role` (either Administrator or standard), and `created_at` (when the account was made). The migration logic in `init_db()` auto-adds the hash/salt/name columns if they're missing from an older database.
 
-| Column | Type | Description |
-|---|---|---|
-| id | INTEGER (PK) | Auto-increment |
-| username | TEXT (UNIQUE, NOT NULL) | Login username |
-| password_hash | TEXT | PBKDF2-SHA256 hash (NEW in MS3) |
-| salt | TEXT | 16-byte hex salt, unique per user (NEW in MS3) |
-| name | TEXT | Display name (NEW in MS3) |
-| role | TEXT | 'Administrator' or 'Standard User' |
-| created_at | TEXT | Account creation timestamp |
+**glucose_records** — The simplest table, mostly from MS2. Each row is one glucose reading: `glucose_value` (mmol/L), `timestamp`, and `user_id` linking back to `users`. Used by the old manual-entry form; the newer Excel-based workflow doesn't write here as heavily, but the table's still maintained for backward compatibility.
 
-### Table: `glucose_records`
+**training_files** — An upload log, also from MS2. Tracks `file_name`, `file_size`, and `upload_time` for every Excel file uploaded on the Model Training page. Purely metadata — the actual file bytes live in `user_files`.
 
-| Column | Type | Description |
-|---|---|---|
-| id | INTEGER (PK) | Auto-increment |
-| glucose_value | REAL | Blood glucose in mmol/L |
-| timestamp | TEXT (NOT NULL) | Reading timestamp |
-| user_id | INTEGER | FK to users.id |
+**user_files** — New in MS3, and the most important table in the system. Every file a user touches goes here as a BLOB, keyed to `user_id` + `file_type`. The `file_type` field is one of ten values: `raw_upload` (original 2-column Excel), `15min_data` / `30min_data` / `50min_data` (generated 11-column sliding-window training files), `prediction_15min` / `prediction_30min` / `prediction_50min` (final Excel outputs from training), and `metrics_15min` / `metrics_30min` / `metrics_50min` (RMSE/MAE/MAPE CSVs). Each upload or generation is a new row — history is never overwritten. The training subprocess and the web UI both read from and write to this table directly; there are no shared local folders anywhere in the critical path.
 
-### Table: `training_files`
-
-| Column | Type | Description |
-|---|---|---|
-| id | INTEGER (PK) | Auto-increment |
-| file_name | TEXT (NOT NULL) | Uploaded filename |
-| file_size | INTEGER | Size in bytes |
-| upload_time | TEXT | Upload timestamp |
-
-### Table: `user_files` (NEW in MS3)
-
-| Column | Type | Description |
-|---|---|---|
-| id | INTEGER (PK) | Auto-increment |
-| user_id | INTEGER (NOT NULL) | FK to users.id — who owns this file |
-| file_type | TEXT (NOT NULL) | Category: raw_upload, 15min_data, 30min_data, 50min_data, prediction_15min, prediction_30min, prediction_50min, metrics_15min, metrics_30min, metrics_50min |
-| file_name | TEXT (NOT NULL) | Original filename |
-| file_content | BLOB (NOT NULL) | Raw bytes of the file |
-| created_at | TEXT | Insertion timestamp |
-
-This table is the backbone of per-user data isolation. Every file — from the original Excel upload through to the final prediction results — lives here, keyed to a specific user. The training subprocess (`VMD_NOA_BILSTM.py`) and the web UI (`app.py`) both read from and write to this table, never touching shared local folders.
-
-### Key DB Functions (added in MS3)
-
-| Function | What it does |
-|---|---|
-| `register_user(username, password, name, role)` | Creates account with hashed password + salt |
-| `verify_user(username, password)` | Checks credentials, returns user dict or None |
-| `_hash_password(password, salt)` | PBKDF2-HMAC-SHA256, 100k iterations |
-| `_ensure_demo_user(username, password, name, role)` | Seeds or backfills demo accounts |
-| `get_all_users()` | Admin: lists all registered users |
-| `save_user_file(user_id, file_type, file_name, content)` | Stores file BLOB in user_files |
-| `get_user_files(user_id, file_type?)` | Lists a user's files (metadata only, no BLOB) |
-| `get_all_user_files()` | Admin: lists every user's files |
-| `get_user_file_content(file_id)` | Downloads one file's BLOB by ID |
-| `get_latest_user_file_content(user_id, file_type)` | Gets the newest file of a given type for a user — used by the training subprocess |
+The most-used DB functions in MS3: `register_user()` and `verify_user()` handle all authentication with PBKDF2 hashing. `save_user_file()` stores any file as a BLOB. `get_user_files()` returns a user's file list (metadata only, no payload). `get_latest_user_file_content()` fetches the newest file of a given type for a user — this is what the training subprocess calls to pull training data, and what the analytics display calls to show results. `get_all_user_files()` joins against users for the admin Management view.
 
 ---
 
@@ -395,7 +336,26 @@ This table is the backbone of per-user data isolation. Every file — from the o
 - pip
 - An NVIDIA API key (free tier works) for the LLM Consultation feature — get one at [build.nvidia.com](https://build.nvidia.com)
 
-### Step 1 — Install Dependencies
+### Step 1 — Prepare Your Data
+
+Before running the app, make sure your glucose data is in the `data/` folder. The folder is organized by user:
+
+```
+data/
+├── user1/
+│   ├── user_train_dataset.xlsx    ← upload this for model training
+│   └── user1_Predict_data.xlsx    ← upload this for glucose prediction
+├── user2/
+│   ├── user_train_dataset.xlsx
+│   └── user2_Predict_data.xlsx
+└── ...
+```
+
+Each user folder has two files: one for training your personalized model, one for running predictions against it. We've included sample data for `user1` so you can try the full workflow immediately.
+
+**If you have your own CGM data:** export a 2-column Excel file from Dexcom Clarity or Freestyle Libre — Column 1 = glucose value (mmol/L), Column 2 = timestamp. Create a new folder under `data/` (e.g. `data/yourname/`) and drop your files there.
+
+### Step 2 — Install Dependencies
 
 ```bash
 pip install -r requirements.txt
@@ -403,7 +363,7 @@ pip install -r requirements.txt
 
 Full dependency list: `streamlit`, `streamlit-option-menu`, `pandas`, `numpy`, `matplotlib`, `plotly`, `openpyxl`, `vmdpy`, `torch`, `scikit-learn`, `openai`, `python-dotenv`
 
-### Step 2 — Set Up the API Key
+### Step 3 — Set Up the API Key
 
 Create a `.env` file in the project root:
 
@@ -413,7 +373,7 @@ API_KEY=nvapi-your-key-here
 
 If you skip this step, the LLM Consultation page will show a warning but everything else will work.
 
-### Step 3 — Run the App
+### Step 4 — Run the App
 
 ```bash
 streamlit run app.py
@@ -421,8 +381,7 @@ streamlit run app.py
 
 Opens at `http://localhost:8501`.
 
-### Step 4 — Log In
-<img width="1512" height="982" alt="d39dc624e9c39fe0ee2ba79840fa15dc" src="https://github.com/user-attachments/assets/d13d7c6c-47bf-4c27-a89a-2c46c176c7a4" />
+### Step 5 — Log In
 
 | Username | Password | Role |
 |---|---|---|
@@ -440,7 +399,6 @@ This guide walks you through the entire GlucoGuard workflow, from creating an ac
 ### 9.1 First Launch: Create Your Account
 
 When you open the app, you'll see the login page. If this is your first time, click the **📝 Register** tab.
-<img width="923" height="554" alt="a43552613e5867ab578189c486e2025a" src="https://github.com/user-attachments/assets/3b514339-7b33-4b6b-9e4b-aeea1fcb1204" />
 
 1. Enter your **Display Name** (e.g. "Jane Tan")
 2. Choose a **Username** (e.g. "janetan")
@@ -449,7 +407,6 @@ When you open the app, you'll see the login page. If this is your first time, cl
 5. Click **📝 Create Account**
 
 You'll see a success message. Switch back to the **🔐 Login** tab and sign in with your new credentials.
-
 
 After login, you land on the Dashboard — a welcome page showing your name, role, and a summary of available features.
 
@@ -465,7 +422,9 @@ If you logged in as `admin`, you'll see all registered users and all files acros
 
 This is the core workflow. You need an Excel file with at least 20 rows of glucose data at 5-minute intervals — two columns: glucose value (mmol/L) and timestamp.
 
-The repo includes sample data if you don't have your own: `glucose_record_patient1.xlsx` and `glucose_record_patient3.xlsx`.
+**If you're just testing, we've already put sample data there:**
+- `data/raw_glucose_data.xlsx` — raw 2-column glucose readings (upload this for model training)
+- `data/predict_testdata.xlsx` — glucose history for testing predictions
 
 **Step 3a — Upload Data**
 
@@ -475,7 +434,6 @@ The repo includes sample data if you don't have your own: `glucose_record_patien
 4. The system validates your file: numeric glucose column, parseable timestamps, no missing values. If something's wrong, you'll get a specific error telling you what to fix.
 
 **Step 3b — Generate Training Files**
-<img width="1512" height="982" alt="cefc082b1d9e24570eadf2a7d0e61ce7" src="https://github.com/user-attachments/assets/fa91b143-8522-4b7e-a28b-bd45d496a4bf" />
 
 1. Scroll to "2. Generate Training Files"
 2. You'll see a summary of your uploaded file (row count, column count)
@@ -518,19 +476,16 @@ If any horizon is missing, the section will show "Horizon profile pending" — t
 ### 9.4 Make a Glucose Prediction
 
 Now that you have trained models, you can predict future glucose from any history file.
-<img width="1512" height="982" alt="57cb9d912e760807e63efd2801bb757b" src="https://github.com/user-attachments/assets/14798546-1825-4560-a098-fa87bcc25aa6" />
 
 1. Click **Glucose Prediction** in the sidebar
 2. You should see a green banner: "VMD-NOA-BiLSTM Core Engine Status: Ready"
 3. Upload a 2-column Excel file with your glucose history (it can be the same file you used for training, or a different one — the predictor uses the trained models, not the training data)
 4. Expand "Data Preview" to verify the file loaded correctly
 5. You'll see a caption showing how many sliding windows were constructed (e.g. "Sliding window constructed: 91 windows from 100 readings")
-   <img width="1512" height="982" alt="9d9e01116e3d119a35ec031d3af361ba" src="https://github.com/user-attachments/assets/00158067-8551-449a-b911-cf934590eaa6" />
-
-7. Click **🚀 Execute VMD-NOA-BiLSTM Prediction**
-8. After a few seconds: three metric cards appear showing predicted glucose at +15, +30, and +50 minutes, with delta indicators (e.g. "+0.3" means glucose is predicted to rise 0.3 mmol/L)
-9. Below the cards: an interactive Plotly chart showing your full historical glucose trace (faded blue) with the AI prediction trajectory overlaid (bold red, last 4 points). Hover over points for exact values and timestamps.
-10. A green success message confirms: "Prediction synced to LLM Consultation"
+6. Click **🚀 Execute VMD-NOA-BiLSTM Prediction**
+7. After a few seconds: three metric cards appear showing predicted glucose at +15, +30, and +50 minutes, with delta indicators (e.g. "+0.3" means glucose is predicted to rise 0.3 mmol/L)
+8. Below the cards: an interactive Plotly chart showing your full historical glucose trace (faded blue) with the AI prediction trajectory overlaid (bold red, last 4 points). Hover over points for exact values and timestamps.
+9. A green success message confirms: "Prediction synced to LLM Consultation"
 
 ### 9.5 Get AI-Powered Insights
 
@@ -541,7 +496,6 @@ This is where everything comes together.
 3. If the dashboard says "No prediction data loaded", go back to step 9.4 — you need to run a prediction first
 
 **Fill in your lifestyle context:**
-<img width="910" height="537" alt="d074ab85d4aca8217caf11723a116787" src="https://github.com/user-attachments/assets/a022bc0a-ffde-4eef-848a-3bc9c9a76749" />
 
 4. **Insulin column:** Select "Yes" if you've injected recently, then enter dosage and timing
 5. **Food column:** Select "Yes" if you've eaten, then describe what, estimate carbs (Low/Medium/High), and when
@@ -602,7 +556,7 @@ This is the checklist we ran ourselves, methodically, for every feature. Each te
 
 **Model Training Page**
 
-- Upload valid 2-column Excel (glucose_record_patient1.xlsx, 1000+ rows) → file saved to both `training_files` and `user_files` (type=raw_upload), success toast shown
+- Upload valid 2-column Excel (data/user1/user_train_dataset.xlsx, 1000+ rows) → file saved to both `training_files` and `user_files` (type=raw_upload), success toast shown
 - Upload Excel with non-numeric values in glucose column (we hand-edited a file to put "N/A" in row 50) → "column 1 (glucose) must be numeric" error, file rejected
 - Upload Excel with unparseable timestamps (we put random strings in column 2) → "column 2 (timestamp) could not be parsed" error
 - Upload Excel with only 1 column → "at least 2 columns required" error
@@ -666,7 +620,7 @@ We ran four structured testing sessions with people who had never seen GlucoGuar
 
 - Registered an account in under 2 minutes, no issues with the form
 - Found the Model Training page from the sidebar without prompting
-- Uploaded `glucose_record_patient1.xlsx` successfully, but tried to click "Start Training" before generating training files — the error message told them to complete Step 2, and they figured it out
+- Uploaded `data/user1/user_train_dataset.xlsx` successfully, but tried to click "Start Training" before generating training files — the error message told them to complete Step 2, and they figured it out
 - Waited through the full training (~14 minutes), commented that the live terminal output made the wait feel shorter because "you can see it's actually working"
 - Switched to Glucose Prediction, uploaded the same file, ran prediction — excited about the Plotly chart: "oh, the red dots go up, that's the prediction"
 - Went to LLM Consultation, filled in food context (had eaten rice 30 minutes ago), got analysis — read the whole thing, said the hypoglycemia alert "makes me feel safer"
@@ -679,7 +633,7 @@ We ran four structured testing sessions with people who had never seen GlucoGuar
 - Generated training files, understood the sliding-window concept from the metric cards showing different window counts
 - During training, watched the real-time logs carefully — asked "the NOA is searching hyperparameters? What bounds?" (this person reads terminal output)
 - After training, spent several minutes on the Performance Analytics section — zoomed into the Matplotlib plots, compared RMSE across horizons, noted that 50min MAPE was higher as expected
-- On Glucose Prediction, uploaded a separate test file (`predict_testdata.xlsx`) instead of the training file — this was the intended workflow and it worked correctly
+- On Glucose Prediction, uploaded a separate test file (`user1_Predict_data.xlsx`) instead of the training file — this was the intended workflow and it worked correctly
 - On LLM Consultation, tested the safety guardrails deliberately: set glucose context low, asked "should I exercise?" — confirmed the LLM refused to recommend exercise
 - **Issues found:** Wanted to download the prediction results as Excel. There's no export button. They right-clicked the Plotly chart expecting a "download data" option.
 - **Overall:** "The ML pipeline is legit. The UI needs export features." Completed workflow in ~25 minutes.
