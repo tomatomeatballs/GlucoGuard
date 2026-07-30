@@ -57,7 +57,7 @@ except ImportError:
     st.stop()
 
 
-# ==================== PAGE CONFIGURATION ====================
+# PAGE CONFIGURATION (Li Yingzhuo)
 st.set_page_config(
     page_title="CGM Glucose Monitoring System",
     page_icon="🩸",
@@ -66,7 +66,7 @@ st.set_page_config(
 )
 
 
-# ==================== DATABASE INITIALIZATION ====================
+#  DATABASE INITIALIZATION(Xiao Hongyu)
 try:
     init_db()
 except Exception as e:
@@ -74,7 +74,7 @@ except Exception as e:
     st.stop()
 
 
-# ==================== SESSION STATE INITIALIZATION ====================
+#  SESSION STATE INITIALIZATION(Xiao Hongyu)
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
@@ -91,7 +91,7 @@ if "role" not in st.session_state:
     st.session_state.role = "standard"
 
 
-# ==================== LOGIN PAGE ====================
+#  LOGIN PAGE(Li Yingzhuo)
 def login_page():
     """
     Display the login/registration interface.
@@ -169,7 +169,7 @@ def login_page():
                         st.error(f'❌ {message}')
 
 
-# ==================== DASHBOARD PAGE ====================
+#  DASHBOARD PAGE (Li Yingzhuo)
 def dashboard_page():
     if not st.session_state.logged_in:
         login_page()
@@ -190,7 +190,7 @@ def dashboard_page():
         - 📈 Interactive data visualization
         - 📄 Health report generation
         """)
-        
+     
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             if st.button('Logout', use_container_width=True):
@@ -201,12 +201,12 @@ def dashboard_page():
                 st.session_state.role = 'standard'
                 st.rerun()
 
-
+#Xiao Hongyu updated the users' status to the database
 def save_to_database(timestamp, glucose_value):
     pass
 
 
-# ==================== SLIDING-WINDOW TRAINING DATA GENERATOR ====================
+#  SLIDING-WINDOW TRAINING DATA GENERATOR(Li Yingzhuo)
 def generate_training_files(df_2col, data_dir='data'):
     """
     Convert a 2-column Excel (glucose_value + timestamp) into the three 11-column
@@ -294,7 +294,7 @@ def check_models_ready():
     return all(os.path.exists(f) for f in model_files)
 
 
-# ==================== MANAGEMENT PAGE ====================
+#  MANAGEMENT PAGE (Xiao Hongyu)
 def management_page():
     """
     Role-based view of user profiles and files.
