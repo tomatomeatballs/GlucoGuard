@@ -785,7 +785,8 @@ Beyond user testing, we deliberately broke things to make sure they failed grace
 - **Management page** — built the role-based user and file management console
 - **Database integration throughout** — connected all pages to read/write through `db.py` with per-user scoping; migrated training I/O from local disk to database BLOBs
 - **UI/UX** — sidebar navigation,  chat interface styling, layouts designs
-- **Testing & documentation** — verified all features end-to-end, maintained `project_log.md`
+- **MS3 poster** — designed the milestone poster 
+
 
 ### Shared Work
 
@@ -793,6 +794,7 @@ Beyond user testing, we deliberately broke things to make sure they failed grace
 - Peer evaluations (HealthSync, Lumina)
 - Poster design and presentation materials
 - Code review and debugging across the full stack
+- - **Testing & documentation** — verified all features end-to-end, maintained `project_log.md`
 
 ---
 
