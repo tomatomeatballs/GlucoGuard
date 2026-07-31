@@ -726,7 +726,7 @@ Based on the user testing sessions, here's what we fixed before MS3 submission:
 | No explanation of where CGM data comes from | Tester 3 | Added a note in the Model Training page caption: "If you use Dexcom, export from Clarity. If you use Freestyle Libre, export from LibreView. Format: 2 columns, glucose (mmol/L) + timestamp." |
 | Registration form clears on error | Tester 1 | Streamlit's default behavior. The form keeps values in `st.session_state` keys so re-typing isn't needed on validation errors — we verified this works correctly. |
 | Training time is long for urgent use | Tester 3 | The sample models in `models/` are pre-trained on patient data included in the repo. New users can skip training and go straight to prediction using these pre-trained models. Added a note about this. |
-| No session timeout | Tester 4 | Streamlit doesn't natively support session expiry. Added to future work. For now, the logout button is clearly visible in the sidebar. |
+| No session timeout | Tester 1 | Streamlit doesn't natively support session expiry. Added to future work. For now, the logout button is clearly visible in the sidebar. |
 
 ### 10.4 Edge Cases & Stress Testing
 
@@ -775,8 +775,6 @@ Beyond user testing, we deliberately broke things to make sure they failed grace
 - **Model Training page** — integrated the real subprocess execution with live terminal output streaming, progress bar synchronization, and post-training analytics display (prediction tracking plots + RMSE/MAE/MAPE cards)
 - **Algorithm integration** — modified `VMD_NOA_BILSTM.py` to support per-horizon `zim` values, database-driven I/O, and subprocess execution from the Streamlit UI
 - **Model tuning** — validated prediction accuracy across the three horizons, tuned NOA search bounds and BiLSTM architecture for the glucose prediction task
-- **LLM Consultation Hub** — integrated the NVIDIA NIM API via `src/llm_chat.py`, built the lifestyle context inputs (insulin/food/exercise with show/hide logic), designed the safety-tuned system prompt, implemented multi-turn chat with conversation history
-- **MS3 README** — prepared the milestone documentation and comparison with MS2
 
 ### Xiao Hongyu 
 
@@ -794,7 +792,9 @@ Beyond user testing, we deliberately broke things to make sure they failed grace
 - Peer evaluations (HealthSync, Lumina)
 - Poster design and presentation materials
 - Code review and debugging across the full stack
-- - **Testing & documentation** — verified all features end-to-end, maintained `project_log.md`
+-  **Testing & documentation** — verified all features end-to-end, maintained `project_log.md`
+- **LLM Consultation Hub** — integrated the NVIDIA NIM API via `src/llm_chat.py`, built the lifestyle context inputs (insulin/food/exercise with show/hide logic), designed the safety-tuned system prompt, implemented multi-turn chat with conversation history
+- **MS3 README** — prepared the milestone documentation and comparison with MS2
 
 ---
 
